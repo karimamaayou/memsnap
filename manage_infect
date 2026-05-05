@@ -52,22 +52,21 @@ install_injection() {
         return 0
     fi
 
-    local inject_bin="$SCRIPT_DIR/assets/inject"
     local evil_lib="$SCRIPT_DIR/assets/evil.so"
 
-    if [ ! -f "$inject_bin" ] || [ ! -f "$evil_lib" ]; then
-        echo "[!] Pre‑built injector or library missing from assets/"
-        echo "[!] Place 'inject' and 'evil.so' in assets/ before running."
+    if [ ! -f "$evil_lib" ]; then
+        echo "[!] Pre‑built library missing from assets/evil.so"
+        echo "[!] Build it first with: gcc -shared -fPIC evil.c -o assets/evil.so"
         exit 1
     fi
 
-    /usr/bin/sleep 9999 &
+    # Launch a target process with the evil library pre‑loaded
+    LD_PRELOAD="$evil_lib" /usr/bin/sleep 9999 &
     local pid=$!
     sleep 1
     echo $pid > "$SLEEP_PID_FILE"
-    sudo "$inject_bin" -p $pid "$evil_lib"
     touch "$FLAG_INJECTION"
-    echo "[+] Code injected into PID $pid"
+    echo "[+] Code injected (LD_PRELOAD) into PID $pid"
 }
 
 install_backdoor() {
