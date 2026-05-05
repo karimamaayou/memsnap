@@ -1,0 +1,42 @@
+#!/bin/bash
+# generate_dataset.sh – capture memory dumps for all 8 malware states
+set -e
+
+OUTPUT_DIR="${1:-dumps}"   # default to ./dumps if no argument given
+mkdir -p "$OUTPUT_DIR"
+
+# Ensure we start from a clean state
+./manage_infect -c
+
+COMBINATIONS=(
+  "rootkit,injection,backdoor"
+  "injection,backdoor"
+  "injection,rootkit"
+  "injection"
+  "backdoor,rootkit"
+  "backdoor"
+  "rootkit"
+  ""                # clean
+)
+
+for combo in "${COMBINATIONS[@]}"; do
+  echo "=== Processing: ${combo:-clean} ==="
+
+  # Always start clean
+  ./manage_infect -c
+  sleep 1
+
+  if [ -z "$combo" ]; then
+    # Clean state – capture memory with no infection (use -a directly after clean)
+    ./manage_infect -c -a "$OUTPUT_DIR"
+  else
+    # Infect with the specific combination and capture
+    ./manage_infect -i "$combo" -a "$OUTPUT_DIR"
+  fi
+
+  echo "=== Done: ${combo:-clean} ==="
+  echo
+done
+
+echo "[✓] All 8 dumps generated in: $OUTPUT_DIR"
+ls -lh "$OUTPUT_DIR"
