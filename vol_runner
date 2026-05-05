@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+
+"""
+Simplified vol_runner – runs Volatility3 Linux plugins in parallel,
+saves raw text output, and writes a summary JSON.
+"""
+
+import subprocess, json, sys
+from pathlib import Path
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+PLUGINS = [
+    "linux.sockstat",
+    "linux.malfind",
+    "linux.check_syscall",
+    "linux.lsmod",
+    "linux.psscan",
+    # TODO: enhance the run speed temporarly
+    # "linux.pslist",
+    # "linux.pstree",
+    # "linux.psaux",
+    # "linux.bash",
+    # "linux.lsof",
+]
+
+def run_plugin(dump_path: str, plugin: str, output_dir: Path) -> dict:
+    """Run a single plugin, save stdout to a .txt file."""
+    out_file = output_dir / f"{plugin.replace('.', '_')}.json"
+    cmd = [
+        "vol", "-f", dump_path,
+        "--renderer", "json",
+        plugin
+    ]
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        out_file.write_text(proc.stdout, encoding="utf-8", errors="replace")
+        return {
+            "plugin": plugin,
+            "output_file": str(out_file),
+            "returncode": proc.returncode,
+            "error": proc.stderr[:500] if proc.returncode != 0 else None
+        }
+    except Exception as e:
+        return {
+            "plugin": plugin,
+            "output_file": str(out_file) if 'out_file' in locals() else None,
+            "returncode": -1,
+            "error": str(e)
+        }
+
+def run_all(dump_path: str, output_base: str = "analysis/results") -> str:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = Path(output_base) / f"{timestamp}_linux"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(run_plugin, dump_path, p, output_dir): p for p in PLUGINS}
+
+        for future in as_completed(futures):
+            plugin = futures[future]
+            try:
+                res = future.result()
+                results[plugin] = res
+                status = "✓" if res["returncode"] == 0 else "✗"
+                print(f"  [{status}] {plugin}")
+            except Exception as e:
+                print(f"  [✗] {plugin} — {e}")
+                results[plugin] = {"plugin": plugin, "error": str(e)}
+
+    # Save the same summary JSON you had before
+    (output_dir / "run_summary.json").write_text(json.dumps(results, indent=2))
+    print(f"\n[+] Results saved in: {output_dir}")
+    return str(output_dir)
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: vol_runner.py <memory_dump>")
+        sys.exit(1)
+    run_all(sys.argv[1])
