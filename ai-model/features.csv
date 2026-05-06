@@ -1,0 +1,9 @@
+dump_name,label_rootkit,label_injection,label_backdoor,hidden_proc_count,hooked_syscall_count,hidden_module_count,total_sockets,high_port_listeners,has_injection
+memdump_20260505_122448_clean.raw,0,0,0,31,0,0,235,0,0
+memdump_20260505_122657_backdoor.raw,0,0,1,23,0,0,243,2,0
+memdump_20260505_122730_rootkit_backdoor.raw,1,0,1,21,0,1,251,2,0
+memdump_20260505_122816_rootkit.raw,1,0,0,24,0,1,235,0,0
+memdump_20260506_110614_injection.raw,0,1,0,24,0,0,235,0,1
+memdump_20260506_110622_injection_backdoor.raw,0,1,1,19,0,0,251,2,1
+memdump_20260506_110628_rootkit_injection.raw,1,1,0,21,0,1,243,2,1
+memdump_20260506_110636_rootkit_injection_backdoor.raw,1,1,1,21,0,1,243,2,1
