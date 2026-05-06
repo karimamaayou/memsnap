@@ -7,10 +7,11 @@ run Volatility 3 plugins, extract features, and write features.csv.
 Usage:
     cd ~/memsnap
     source venv/bin/activate
-    ./extract_feats <path_to_dumps_directory> [output_csv]
+    ./extract_feats <path_to_dumps_directory> [output_csv] [--append]
 
 Example:
     ./extract_feats dumps/ features.csv
+    ./extract_feats new_dumps/ features.csv --append
 
 Injection detection (has_injection):
     Uses linux.lsof.Lsof.  After the new manage_infect install_injection(),
@@ -137,20 +138,6 @@ def extract_features(dump_path: str) -> dict:
         features["high_port_listeners"] = SENTINEL
 
     # --- has_injection (linux.lsof.Lsof marker file) ---
-    #
-    # The new install_injection() keeps /tmp/injection_marker open via a
-    # dedicated "tail -f" sentinel process.  linux.lsof.Lsof reads the
-    # kernel's fdtable structures directly (not /proc), so the open fd is
-    # visible in the AVML dump even when Diamorphine hides the process.
-    #
-    # We scan every row returned by Lsof for the substring
-    # "injection_marker" in any string-valued field.  This is intentionally
-    # broad: Volatility 3 column names vary across versions (File, Path,
-    # FD path, etc.) so we inspect all values rather than a specific key.
-    #
-    # Fallback: if lsof returned nothing (plugin unavailable / timeout),
-    # we fall back to the old pslist "sleep 9999" heuristic so that dumps
-    # captured with the previous inject method still score correctly.
     has_inj = 0
 
     lsof_rows = results.get("linux.lsof.Lsof", [])
@@ -158,7 +145,6 @@ def extract_features(dump_path: str) -> dict:
         for row in lsof_rows:
             if not isinstance(row, dict):
                 continue
-            # Check every string value in the row for our marker name
             if any(
                 isinstance(v, str) and INJECTION_MARKER_NAME in v
                 for v in row.values()
@@ -166,7 +152,7 @@ def extract_features(dump_path: str) -> dict:
                 has_inj = 1
                 break
     else:
-        # Fallback: pslist "sleep 9999" heuristic (old method)
+        # Fallback: pslist "sleep 9999" heuristic
         for proc in pslist:
             if not isinstance(proc, dict):
                 continue
@@ -215,7 +201,7 @@ COLUMN_ORDER = [
 ]
 
 
-def process_directory(input_dir: str, output_csv: str = "features.csv"):
+def process_directory(input_dir: str, output_csv: str = "features.csv", append: bool = False):
     input_path = Path(input_dir)
     dumps = sorted(
         list(input_path.glob("*.raw"))  +
@@ -228,8 +214,8 @@ def process_directory(input_dir: str, output_csv: str = "features.csv"):
 
     print(f"[*] Found {len(dumps)} dump(s). Starting extraction...\n")
     rows = []
-    for dump_file in dumps:
-        print(f"  ► {dump_file.name}")
+    for i, dump_file in enumerate(dumps, 1):
+        print(f"  [{i}/{len(dumps)}] ► {dump_file.name}")
         labels   = parse_labels(dump_file.name)
         features = extract_features(str(dump_file))
         row = {"dump_name": dump_file.name}
@@ -244,25 +230,37 @@ def process_directory(input_dir: str, output_csv: str = "features.csv"):
 
     extra = [k for k in rows[0] if k not in COLUMN_ORDER]
     fieldnames = COLUMN_ORDER + extra
-    with open(output_csv, "w", newline="") as f:
+
+    # Write CSV – append mode if requested and file exists
+    file_exists = Path(output_csv).exists()
+    write_mode = 'a' if append and file_exists else 'w'
+    with open(output_csv, write_mode, newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
+        if not (append and file_exists):
+            writer.writeheader()
         writer.writerows(rows)
 
-    print(f"[+] Written {len(rows)} rows → {output_csv}")
-    print("\nQuick sanity check:")
-    for col in fieldnames[4:]:
-        vals = [r[col] for r in rows]
-        unique = sorted(set(vals))
-        flag = " ← ⚠ all identical" if len(unique) == 1 else ""
-        print(f"  {col:30s} unique={unique}{flag}")
+    action = "appended" if (append and file_exists) else "written"
+    print(f"[+] {len(rows)} rows {action} to {output_csv}")
+
+    # Sanity check (on the entire dataset if possible)
+    if not append:
+        # Only show if we regenerated whole file
+        print("\nQuick sanity check:")
+        for col in fieldnames[4:]:
+            vals = [r[col] for r in rows]
+            unique = sorted(set(vals))
+            flag = " ← ⚠ all identical" if len(unique) == 1 else ""
+            print(f"  {col:30s} unique={unique}{flag}")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: extract_feats <directory_of_dumps> [output_csv]")
-        print("Example: ./extract_feats dumps/ features.csv")
-        sys.exit(1)
-    in_dir  = sys.argv[1]
-    out_csv = sys.argv[2] if len(sys.argv) > 2 else "features.csv"
-    process_directory(in_dir, out_csv)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Extract forensic features from memory dumps")
+    parser.add_argument("input_dir", help="Directory containing memory dumps (.raw, .lime, .dmp)")
+    parser.add_argument("output_csv", nargs="?", default="features.csv", help="Output CSV file (default: features.csv)")
+    parser.add_argument("--append", action="store_true", help="Append new rows to existing CSV without rewriting header")
+    args = parser.parse_args()
+
+    process_directory(args.input_dir, args.output_csv, append=args.append)
