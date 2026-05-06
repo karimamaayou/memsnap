@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+
+"""Detect rootkit / injection / backdoor from a single memory dump."""
+
+import argparse, json, os, subprocess, sys
+from pathlib import Path
+import joblib
+import pandas as pd
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_MODEL = SCRIPT_DIR / ".." / "assets" / "model.pkl"
+ASSETS_DIR = SCRIPT_DIR / ".." / "assets"
+
+PLUGINS = [
+    "linux.pslist",
+    "linux.psscan",
+    "linux.hidden_modules",
+    "linux.sockstat",
+    "linux.lsof.Lsof",
+]
+
+SENTINEL = -1
+
+def run_plugin(dump_path, plugin):
+    cmd = ["vol", "-f", dump_path, "-s", str(ASSETS_DIR), "--renderer", "json", plugin]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=400)
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return []
+        data = json.loads(proc.stdout)
+        if isinstance(data, list): return data
+        if isinstance(data, dict): return data.get("rows", data.get("data", []))
+        return []
+    except:
+        return []
+
+def extract_features(dump_path):
+    results = {}
+    for plugin in PLUGINS:
+        results[plugin] = run_plugin(dump_path, plugin)
+
+    hidden_mods = results.get("linux.hidden_modules", [])
+    hidden_module_count = len(hidden_mods) if hidden_mods else 0
+
+    has_injection = 0
+    lsof_rows = results.get("linux.lsof.Lsof", [])
+    if lsof_rows:
+        for row in lsof_rows:
+            if isinstance(row, dict) and any(
+                isinstance(v, str) and "injection_marker" in v for v in row.values()
+            ):
+                has_injection = 1
+                break
+
+    sockstat = results.get("linux.sockstat", [])
+    high_port_listeners = 0
+    total_sockets = len(sockstat) if sockstat else SENTINEL
+    if sockstat:
+        for s in sockstat:
+            if not isinstance(s, dict): continue
+            port_val = s.get("Source Port") or s.get("Local Port") or s.get("Port") or 0
+            try:
+                if int(port_val) == 4444:
+                    high_port_listeners += 1
+            except:
+                pass
+
+    return pd.DataFrame([{
+        "hidden_module_count": hidden_module_count,
+        "has_injection": has_injection,
+        "high_port_listeners": high_port_listeners,
+        "total_sockets": total_sockets,
+    }])
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser(description="Detect malware components from a memory dump")
+    p.add_argument("dump", help="Path to memory dump")
+    p.add_argument("-m", "--model", default=str(DEFAULT_MODEL), help="Path to model.pkl")
+    args = p.parse_args()
+
+    if not Path(args.dump).exists():
+        print(f"Error: file not found: {args.dump}")
+        sys.exit(1)
+
+    print("Extracting features...")
+    X_new = extract_features(args.dump)
+
+    try:
+        model = joblib.load(args.model)
+    except FileNotFoundError:
+        print(f"Error: model not found at {args.model}. Train it first.")
+        sys.exit(1)
+
+    pred = model.predict(X_new)[0]
+    for i, label in enumerate(["Rootkit", "Injection", "Backdoor"]):
+        print(f"{label:10}: {'detected' if pred[i] else 'not detected'}")

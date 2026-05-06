@@ -1,0 +1,41 @@
+#! /usr/bin/env python3
+
+import pandas as pd
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.multioutput import MultiOutputClassifier
+from sklearn.model_selection import LeaveOneOut, cross_val_score
+import joblib
+
+df = pd.read_csv("features.csv")
+
+FEATURES = ["hidden_module_count", "has_injection", "high_port_listeners", "total_sockets"]
+LABELS = ["label_rootkit", "label_injection", "label_backdoor"]
+
+X = df[FEATURES]
+y = df[LABELS]
+
+loo = LeaveOneOut()
+print("Per-label LOO accuracy:")
+for label in LABELS:
+    clf = DecisionTreeClassifier(random_state=42)
+    scores = cross_val_score(clf, X, y[label], cv=loo, scoring="accuracy")
+    print(f"  {label}: {scores.mean():.2f}")
+
+clf_multi = MultiOutputClassifier(DecisionTreeClassifier(random_state=42))
+exact_match = cross_val_score(clf_multi, X, y, cv=loo, scoring="accuracy")
+print(f"Exact match accuracy: {exact_match.mean():.2f}")
+
+clf_multi.fit(X, y)
+joblib.dump(clf_multi, "model.pkl")
+print("Model saved to model.pkl")
+
+print("\nLearned rules:")
+for est, label in zip(clf_multi.estimators_, LABELS):
+    tree = est.tree_
+    if tree.node_count > 1:
+        feat = FEATURES[tree.feature[0]]
+        thresh = tree.threshold[0]
+        print(f"  {label}: {feat} <= {thresh:.1f}")
+    else:
+        print(f"  {label}: constant leaf")
+

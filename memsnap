@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+
+# memsnap – unified entrypoint for the MemSnap pipeline
+
+SCRIPTS_DIR="$(cd "$(dirname "$0")/scripts" && pwd)"
+
+if [ $# -lt 1 ]; then
+    echo "Usage: $(basename $0) <command> [args...]"
+    echo ""
+    echo "Available commands:"
+    for script in "$SCRIPTS_DIR"/*; do
+        cmd=$(basename "$script")
+        echo "  $cmd"
+    done
+    exit 1
+fi
+
+COMMAND="$1"
+shift
+
+CMD_PATH="$SCRIPTS_DIR/$COMMAND"
+if [ ! -x "$CMD_PATH" ]; then
+    echo "Error: unknown command '$COMMAND' (or script not executable)"
+    exit 1
+fi
+
+exec "$CMD_PATH" "$@"
