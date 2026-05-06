@@ -2,7 +2,7 @@
 
 """Detect rootkit / injection / backdoor from a single memory dump."""
 
-import argparse, json, os, subprocess, sys
+import argparse, json, subprocess, sys
 from pathlib import Path
 import joblib
 import pandas as pd
@@ -18,7 +18,6 @@ PLUGINS = [
     "linux.sockstat",
     "linux.lsof.Lsof",
 ]
-
 SENTINEL = -1
 
 def run_plugin(dump_path, plugin):
@@ -40,36 +39,35 @@ def extract_features(dump_path):
         results[plugin] = run_plugin(dump_path, plugin)
 
     hidden_mods = results.get("linux.hidden_modules", [])
-    hidden_module_count = len(hidden_mods) if hidden_mods else 0
+    hmod = len(hidden_mods) if hidden_mods else 0
 
-    has_injection = 0
+    has_inj = 0
     lsof_rows = results.get("linux.lsof.Lsof", [])
     if lsof_rows:
         for row in lsof_rows:
             if isinstance(row, dict) and any(
                 isinstance(v, str) and "injection_marker" in v for v in row.values()
             ):
-                has_injection = 1
+                has_inj = 1
                 break
 
     sockstat = results.get("linux.sockstat", [])
-    high_port_listeners = 0
-    total_sockets = len(sockstat) if sockstat else SENTINEL
+    high_port = 0
+    total_sock = len(sockstat) if sockstat else SENTINEL
     if sockstat:
         for s in sockstat:
             if not isinstance(s, dict): continue
-            port_val = s.get("Source Port") or s.get("Local Port") or s.get("Port") or 0
+            port = s.get("Source Port") or s.get("Local Port") or s.get("Port") or 0
             try:
-                if int(port_val) == 4444:
-                    high_port_listeners += 1
+                if int(port) == 4444: high_port += 1
             except:
                 pass
 
     return pd.DataFrame([{
-        "hidden_module_count": hidden_module_count,
-        "has_injection": has_injection,
-        "high_port_listeners": high_port_listeners,
-        "total_sockets": total_sockets,
+        "hidden_module_count": hmod,
+        "has_injection": has_inj,
+        "high_port_listeners": high_port,
+        "total_sockets": total_sock,
     }])
 
 if __name__ == "__main__":

