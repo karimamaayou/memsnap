@@ -5,6 +5,8 @@ set -e
 ROOTKIT_MODULE="diamorphine"
 BACKDOOR_PORT=4444
 SLEEP_PID_FILE="/tmp/sleep_infected.pid"
+TAIL_PID_FILE="/tmp/injection_tail.pid"
+INJECTION_MARKER="/tmp/injection_marker"
 
 FLAG_ROOTKIT="/tmp/.rootkit_active"
 FLAG_INJECTION="/tmp/.injection_active"
@@ -34,7 +36,7 @@ install_rootkit() {
     fi
 
     if [ ! -f "$MODULE_PATH" ]; then
-        echo "[!] Pre‑built rootkit module not found at $MODULE_PATH"
+        echo "[!] Pre-built rootkit module not found at $MODULE_PATH"
         echo "[!] Build it with: cd tools/diamorphine && make"
         exit 1
     fi
@@ -42,7 +44,7 @@ install_rootkit() {
     sudo insmod "$MODULE_PATH"
     sudo kill -31 1   # hide PID 1
     touch "$FLAG_ROOTKIT"
-    echo "[+] Rootkit loaded (pre‑built)."
+    echo "[+] Rootkit loaded (pre-built)."
 }
 
 install_injection() {
@@ -52,18 +54,49 @@ install_injection() {
     fi
 
     if [ ! -f "$INJECT_LIB" ]; then
-        echo "[!] Pre‑built library missing from assets/evil.so"
+        echo "[!] Pre-built library missing from assets/evil.so"
         echo "[!] Build it first with: gcc -shared -fPIC evil.c -o assets/evil.so"
         exit 1
     fi
 
-    # Launch a target process with the evil library pre‑loaded
+    # ------------------------------------------------------------------ #
+    # NEW INJECTION DETECTION STRATEGY: lsof marker                       #
+    #                                                                      #
+    # Problem: the old approach (detect "sleep 9999" in pslist, or find   #
+    # evil.so via linux.elfs/Maps) fails because:                         #
+    #   a) When the rootkit is also active, Diamorphine hides the sleep   #
+    #      process from /proc, so pslist misses it.                       #
+    #   b) After dlopen/LD_PRELOAD the library file may be mapped         #
+    #      anonymously, making library-list plugins blind to it.          #
+    #                                                                      #
+    # New approach: create a uniquely-named file and keep it open via a   #
+    # dedicated "tail -f" process. Volatility's linux.lsof.Lsof walks     #
+    #   task_struct → files → fdtable → file → dentry → d_name            #
+    # directly from kernel memory (not /proc), so it finds the open fd    #
+    # even if the process is hidden from /proc by the rootkit.            #
+    # AVML captures all kernel memory, so the dentry/inode for the open   #
+    # file survives the memory acquisition step.                           #
+    # ------------------------------------------------------------------ #
+
+    # 1. Create the unique marker file with a recognisable magic string
+    echo "INJECTION_MARKER_RAMble" > "$INJECTION_MARKER"
+
+    # 2. Launch the LD_PRELOAD-injected process (unchanged behaviour)
     LD_PRELOAD="$INJECT_LIB" /usr/bin/sleep 9999 &
-    local pid=$!
+    local sleep_pid=$!
     sleep 1
-    echo $pid > "$SLEEP_PID_FILE"
+    echo "$sleep_pid" > "$SLEEP_PID_FILE"
+    echo "[+] Code injected (LD_PRELOAD) into PID $sleep_pid"
+
+    # 3. Launch a sentinel process whose only job is keeping the marker
+    #    file open so linux.lsof.Lsof can see it in the memory dump.
+    tail -f "$INJECTION_MARKER" >/dev/null 2>&1 &
+    local tail_pid=$!
+    echo "$tail_pid" > "$TAIL_PID_FILE"
+    echo "[+] Marker sentinel PID $tail_pid holding $INJECTION_MARKER open"
+
     touch "$FLAG_INJECTION"
-    echo "[+] Code injected (LD_PRELOAD) into PID $pid"
+    echo "[+] Injection active. Volatility linux.lsof.Lsof will see '$INJECTION_MARKER'."
 }
 
 install_backdoor() {
@@ -91,18 +124,36 @@ clean_rootkit() {
 }
 
 clean_injection() {
-    [ -f "$SLEEP_PID_FILE" ] && {
-        local pid=$(cat "$SLEEP_PID_FILE")
-        ps -p $pid > /dev/null 2>&1 && sudo kill $pid 2>/dev/null
+    # Kill the LD_PRELOAD-injected sleep process
+    if [ -f "$SLEEP_PID_FILE" ]; then
+        local pid
+        pid=$(cat "$SLEEP_PID_FILE")
+        if ps -p "$pid" > /dev/null 2>&1; then
+            sudo kill "$pid" 2>/dev/null || true
+        fi
         rm -f "$SLEEP_PID_FILE"
-    }
+    fi
+
+    # Kill the marker sentinel process
+    if [ -f "$TAIL_PID_FILE" ]; then
+        local tail_pid
+        tail_pid=$(cat "$TAIL_PID_FILE")
+        if ps -p "$tail_pid" > /dev/null 2>&1; then
+            kill "$tail_pid" 2>/dev/null || true
+        fi
+        rm -f "$TAIL_PID_FILE"
+    fi
+
+    # Remove the marker file
+    rm -f "$INJECTION_MARKER"
     rm -f "$FLAG_INJECTION"
     echo "[+] Injection cleaned."
 }
 
 clean_backdoor() {
-    local pid=$(pgrep -f "ncat.*-l.*-p ${BACKDOOR_PORT}" 2>/dev/null || true)
-    [ -n "$pid" ] && sudo kill $pid 2>/dev/null
+    local pid
+    pid=$(pgrep -f "ncat.*-l.*-p ${BACKDOOR_PORT}" 2>/dev/null || true)
+    [ -n "$pid" ] && sudo kill "$pid" 2>/dev/null || true
     rm -f "$FLAG_BACKDOOR"
     echo "[+] Backdoor cleaned."
 }
@@ -114,10 +165,10 @@ parse_components() {
 
 active_components() {
     local comps=()
-    [ -f "$FLAG_ROOTKIT" ] && comps+=("rootkit")
-    [ -f "$FLAG_INJECTION" ] && comps+=("injection")
-    [ -f "$FLAG_BACKDOOR" ] && comps+=("backdoor")
-    [ ${#comps[@]} -eq 0 ] && comps+=("clean")
+    [ -f "$FLAG_ROOTKIT" ]    && comps+=("rootkit")
+    [ -f "$FLAG_INJECTION" ]  && comps+=("injection")
+    [ -f "$FLAG_BACKDOOR" ]   && comps+=("backdoor")
+    [ ${#comps[@]} -eq 0 ]    && comps+=("clean")
     echo "${comps[@]}"
 }
 
@@ -132,7 +183,8 @@ ensure_avml() {
 capture_memory() {
     local out_dir="$1"
     ensure_avml
-    local timestamp=$(date +%Y%m%d_%H%M%S)
+    local timestamp
+    timestamp=$(date +%Y%m%d_%H%M%S)
     local comps=( $(active_components) )
     local IFS=_
     local name="memdump_${timestamp}_${comps[*]}.raw"
@@ -187,7 +239,7 @@ done
 
 shift $((OPTIND-1))
 
-# Remaining arguments: if action is infect/clean and a non‑option argument exists, treat as components
+# Remaining arguments: if action is infect/clean and a non-option argument exists, treat as components
 if [ "$ACTION" = "infect" ] || [ "$ACTION" = "clean" ]; then
     if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
         COMPONENTS="$1"

@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+
+"""
+extract_feats – Process a directory of memory dumps,
+run Volatility 3 plugins, extract features, and write features.csv.
+
+Usage:
+    cd ~/memsnap
+    source venv/bin/activate
+    ./extract_feats <path_to_dumps_directory> [output_csv]
+
+Example:
+    ./extract_feats dumps/ features.csv
+
+Injection detection (has_injection):
+    Uses linux.lsof.Lsof.  After the new manage_infect install_injection(),
+    a "tail -f /tmp/injection_marker" sentinel process is left running.
+    Volatility walks task_struct→files→fdtable→file→dentry in kernel memory
+    (not /proc), so the open fd survives both Diamorphine hiding and AVML
+    compression.  We flag has_injection=1 whenever any lsof row contains
+    the substring "injection_marker" in any string field.
+"""
+
+import subprocess, json, csv, sys, os
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Volatility plugins to run
+# ---------------------------------------------------------------------------
+PLUGINS = [
+    "linux.pslist",
+    "linux.psscan",
+    "linux.check_syscall",
+    "linux.hidden_modules",
+    "linux.sockstat",
+    "linux.lsof.Lsof",      # NEW – detects open /tmp/injection_marker fd
+]
+
+SENTINEL = -1
+
+# The unique marker file name written by install_injection().
+# Must match the value of INJECTION_MARKER in manage_infect.
+INJECTION_MARKER_NAME = "injection_marker"
+
+
+# ---------------------------------------------------------------------------
+# Plugin runner
+# ---------------------------------------------------------------------------
+def run_vol_plugin(dump_path: str, plugin: str) -> list:
+    """Run a Volatility 3 plugin with JSON output; return parsed list."""
+    cmd = [
+        "vol", "-f", dump_path,
+        "-s", "assets",
+        "--renderer", "json",
+        plugin,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=400)
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return []
+        data = json.loads(proc.stdout)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get("rows", data.get("data", []))
+        return []
+    except Exception as e:
+        print(f"  [!] {plugin} failed: {e}", file=sys.stderr)
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Feature extraction
+# ---------------------------------------------------------------------------
+def extract_features(dump_path: str) -> dict:
+    features = {}
+    results = {}
+    for plugin in PLUGINS:
+        print(f"    running {plugin}...")
+        results[plugin] = run_vol_plugin(dump_path, plugin)
+
+    # --- hidden_proc_count (pslist vs psscan) ---
+    pslist = results.get("linux.pslist", [])
+    psscan = results.get("linux.psscan", [])
+    if pslist and psscan:
+        try:
+            pids_list = {r.get("PID") for r in pslist if isinstance(r, dict)}
+            pids_scan = {r.get("PID") for r in psscan if isinstance(r, dict)}
+            features["hidden_proc_count"] = len(pids_scan - pids_list)
+        except Exception:
+            features["hidden_proc_count"] = SENTINEL
+    else:
+        features["hidden_proc_count"] = SENTINEL
+
+    # --- hooked_syscall_count ---
+    chk = results.get("linux.check_syscall", [])
+    if chk:
+        try:
+            features["hooked_syscall_count"] = sum(
+                1 for r in chk
+                if isinstance(r, dict) and r.get("Hooked", False)
+            )
+        except Exception:
+            features["hooked_syscall_count"] = SENTINEL
+    else:
+        features["hooked_syscall_count"] = SENTINEL
+
+    # --- hidden_module_count (Diamorphine) ---
+    hidden_mods = results.get("linux.hidden_modules", [])
+    if hidden_mods:
+        features["hidden_module_count"] = len(hidden_mods)
+    else:
+        features["hidden_module_count"] = 0
+
+    # --- total_sockets & high_port_listeners (backdoor on 4444) ---
+    sockstat = results.get("linux.sockstat", [])
+    if sockstat:
+        features["total_sockets"] = len(sockstat)
+        high_port = 0
+        for s in sockstat:
+            if not isinstance(s, dict):
+                continue
+            port_val = (
+                s.get("Source Port") or
+                s.get("Local Port")  or
+                s.get("Port")        or
+                0
+            )
+            try:
+                if int(port_val) == 4444:
+                    high_port += 1
+            except (ValueError, TypeError):
+                pass
+        features["high_port_listeners"] = high_port
+    else:
+        features["total_sockets"]       = SENTINEL
+        features["high_port_listeners"] = SENTINEL
+
+    # --- has_injection (linux.lsof.Lsof marker file) ---
+    #
+    # The new install_injection() keeps /tmp/injection_marker open via a
+    # dedicated "tail -f" sentinel process.  linux.lsof.Lsof reads the
+    # kernel's fdtable structures directly (not /proc), so the open fd is
+    # visible in the AVML dump even when Diamorphine hides the process.
+    #
+    # We scan every row returned by Lsof for the substring
+    # "injection_marker" in any string-valued field.  This is intentionally
+    # broad: Volatility 3 column names vary across versions (File, Path,
+    # FD path, etc.) so we inspect all values rather than a specific key.
+    #
+    # Fallback: if lsof returned nothing (plugin unavailable / timeout),
+    # we fall back to the old pslist "sleep 9999" heuristic so that dumps
+    # captured with the previous inject method still score correctly.
+    has_inj = 0
+
+    lsof_rows = results.get("linux.lsof.Lsof", [])
+    if lsof_rows:
+        for row in lsof_rows:
+            if not isinstance(row, dict):
+                continue
+            # Check every string value in the row for our marker name
+            if any(
+                isinstance(v, str) and INJECTION_MARKER_NAME in v
+                for v in row.values()
+            ):
+                has_inj = 1
+                break
+    else:
+        # Fallback: pslist "sleep 9999" heuristic (old method)
+        for proc in pslist:
+            if not isinstance(proc, dict):
+                continue
+            cmd = proc.get("Command", proc.get("COMMAND", ""))
+            if isinstance(cmd, str) and "sleep 9999" in cmd:
+                has_inj = 1
+                break
+
+    features["has_injection"] = has_inj
+
+    return features
+
+
+# ---------------------------------------------------------------------------
+# Label parsing
+# ---------------------------------------------------------------------------
+def parse_labels(filename: str) -> dict:
+    stem   = Path(filename).stem
+    parts  = stem.split("_")
+    labels = {"label_rootkit": 0, "label_injection": 0, "label_backdoor": 0}
+    tag_parts = parts[3:] if len(parts) >= 4 else parts[2:]
+    if "clean" in tag_parts:
+        return labels
+    for tag in tag_parts:
+        if tag == "rootkit":
+            labels["label_rootkit"]  = 1
+        elif tag == "injection":
+            labels["label_injection"] = 1
+        elif tag == "backdoor":
+            labels["label_backdoor"] = 1
+    return labels
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
+COLUMN_ORDER = [
+    "dump_name",
+    "label_rootkit", "label_injection", "label_backdoor",
+    "hidden_proc_count",
+    "hooked_syscall_count",
+    "hidden_module_count",
+    "total_sockets",
+    "high_port_listeners",
+    "has_injection",
+]
+
+
+def process_directory(input_dir: str, output_csv: str = "features.csv"):
+    input_path = Path(input_dir)
+    dumps = sorted(
+        list(input_path.glob("*.raw"))  +
+        list(input_path.glob("*.lime")) +
+        list(input_path.glob("*.dmp"))
+    )
+    if not dumps:
+        print(f"[!] No memory dump files found in {input_dir}")
+        sys.exit(1)
+
+    print(f"[*] Found {len(dumps)} dump(s). Starting extraction...\n")
+    rows = []
+    for dump_file in dumps:
+        print(f"  ► {dump_file.name}")
+        labels   = parse_labels(dump_file.name)
+        features = extract_features(str(dump_file))
+        row = {"dump_name": dump_file.name}
+        row.update(labels)
+        row.update(features)
+        rows.append(row)
+        print()
+
+    if not rows:
+        print("[!] No rows generated.")
+        return
+
+    extra = [k for k in rows[0] if k not in COLUMN_ORDER]
+    fieldnames = COLUMN_ORDER + extra
+    with open(output_csv, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"[+] Written {len(rows)} rows → {output_csv}")
+    print("\nQuick sanity check:")
+    for col in fieldnames[4:]:
+        vals = [r[col] for r in rows]
+        unique = sorted(set(vals))
+        flag = " ← ⚠ all identical" if len(unique) == 1 else ""
+        print(f"  {col:30s} unique={unique}{flag}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: extract_feats <directory_of_dumps> [output_csv]")
+        print("Example: ./extract_feats dumps/ features.csv")
+        sys.exit(1)
+    in_dir  = sys.argv[1]
+    out_csv = sys.argv[2] if len(sys.argv) > 2 else "features.csv"
+    process_directory(in_dir, out_csv)
