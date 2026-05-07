@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""Web interface for single-dump malware detection – runs on FastAPI."""
+
+import asyncio
+import json
+import subprocess
+import tempfile
+import uvicorn
+from pathlib import Path
+
+import joblib
+import pandas as pd
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+ASSETS_DIR = SCRIPT_DIR / ".." / "assets"
+DEFAULT_MODEL = str(ASSETS_DIR / "model.pkl")
+
+PLUGINS = [
+    "linux.pslist",
+    "linux.psscan",
+    "linux.hidden_modules",
+    "linux.sockstat",
+    "linux.lsof.Lsof",
+]
+
+SENTINEL = -1
+
+app = FastAPI(title="MemScan – Memory Dump Threat Detector")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
+
+
+# ── Frontend ──────────────────────────────────────────────────────────────────
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    html_path = ASSETS_DIR / "index.html"
+    if html_path.exists():
+        return HTMLResponse(content=html_path.read_text())
+    return HTMLResponse("<h1>index.html not found in assets/</h1>", status_code=404)
+
+
+# ── Volatility helpers ────────────────────────────────────────────────────────
+
+def run_plugin(dump_path: str, plugin: str) -> list:
+    cmd = [
+        "vol", "-f", dump_path,
+        "-s", str(ASSETS_DIR),
+        "--renderer", "json",
+        plugin,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=400)
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return []
+        data = json.loads(proc.stdout)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get("rows", data.get("data", []))
+        return []
+    except Exception:
+        return []
+
+
+# ── Streaming analysis ────────────────────────────────────────────────────────
+
+async def analyze_stream(dump_path: str, model_path: Path):
+    """Yields SSE lines with real per-plugin progress then the final result."""
+
+    def emit(payload: dict) -> str:
+        return f"data: {json.dumps(payload)}\n\n"
+
+    total_steps = len(PLUGINS) + 2   # plugins + extract + classify
+
+    # ── Run each plugin ───────────────────────────────────────────────────────
+    results = {}
+    for i, plugin in enumerate(PLUGINS):
+        short = plugin.split(".")[-1]
+        yield emit({
+            "type": "progress",
+            "step": i + 1,
+            "total": total_steps,
+            "label": f"Running {short}",
+        })
+        await asyncio.sleep(0)
+        results[plugin] = await asyncio.to_thread(run_plugin, dump_path, plugin)
+
+    # ── Feature extraction ────────────────────────────────────────────────────
+    yield emit({
+        "type": "progress",
+        "step": len(PLUGINS) + 1,
+        "total": total_steps,
+        "label": "Extracting features",
+    })
+    await asyncio.sleep(0)
+
+    hidden_mods = results.get("linux.hidden_modules", [])
+    hmod = len(hidden_mods) if hidden_mods else 0
+
+    has_inj = 0
+    for row in results.get("linux.lsof.Lsof", []):
+        if isinstance(row, dict) and any(
+            isinstance(v, str) and "injection_marker" in v for v in row.values()
+        ):
+            has_inj = 1
+            break
+
+    sockstat = results.get("linux.sockstat", [])
+    high_port = sum(
+        1 for s in sockstat
+        if isinstance(s, dict) and str(
+            s.get("Source Port") or s.get("Local Port") or s.get("Port") or 0
+        ) == "4444"
+    )
+    total_sock = len(sockstat) if sockstat else SENTINEL
+
+    X = pd.DataFrame([{
+        "hidden_module_count": hmod,
+        "has_injection": has_inj,
+        "high_port_listeners": high_port,
+        "total_sockets": total_sock,
+    }])
+
+    # ── Classify ──────────────────────────────────────────────────────────────
+    yield emit({
+        "type": "progress",
+        "step": total_steps,
+        "total": total_steps,
+        "label": "Running classifier",
+    })
+    await asyncio.sleep(0)
+
+    model = await asyncio.to_thread(joblib.load, str(model_path))
+    pred = model.predict(X)[0]
+    labels = ["Rootkit", "Code Injection", "Backdoor"]
+    threats = [{"label": l, "detected": bool(d)} for l, d in zip(labels, pred)]
+
+    yield emit({
+        "type": "result",
+        "filename": Path(dump_path).name,
+        "threats": threats,
+        "features": X.iloc[0].to_dict(),
+        "any_detected": any(t["detected"] for t in threats),
+    })
+
+
+# ── API ───────────────────────────────────────────────────────────────────────
+
+@app.post("/analyze")
+async def analyze(
+    dump: UploadFile = File(...),
+    model_path: str = Form(""),
+    model_file: UploadFile = File(None),
+):
+    # ── Resolve model path, writing upload to a temp file if provided ─────────
+    tmp_model_path = None
+    if model_file and model_file.filename:
+        model_bytes = await model_file.read()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pkl") as tm:
+            tm.write(model_bytes)
+            tmp_model_path = tm.name
+        resolved_model = Path(tmp_model_path)
+    else:
+        resolved_model = Path(model_path.strip() or DEFAULT_MODEL)
+
+    if not resolved_model.exists():
+        if tmp_model_path:
+            Path(tmp_model_path).unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"Model not found: {resolved_model}")
+
+    # ── Write dump to a temp file ─────────────────────────────────────────────
+    content = await dump.read()
+    suffix = Path(dump.filename).suffix or ".raw"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(content)
+        tmp_dump_path = tmp.name
+
+    # ── Stream – cleanup happens AFTER streaming finishes ────────────────────
+    async def stream_and_cleanup():
+        try:
+            async for chunk in analyze_stream(tmp_dump_path, resolved_model):
+                yield chunk
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
+        finally:
+            Path(tmp_dump_path).unlink(missing_ok=True)
+            if tmp_model_path:
+                Path(tmp_model_path).unlink(missing_ok=True)
+
+    return StreamingResponse(
+        stream_and_cleanup(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8501, reload=False)

@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>MemScan — Memory Threat Analysis</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #07080d;
+    --surface:   #0d0f18;
+    --panel:     #111420;
+    --border:    #1e2235;
+    --border-hi: #2e3558;
+    --accent:    #00e5ff;
+    --accent2:   #7b2fff;
+    --danger:    #ff3860;
+    --safe:      #00e5a0;
+    --text:      #c8cfe8;
+    --text-dim:  #5a6080;
+    --text-mono: #8090b8;
+    --glow:      0 0 20px rgba(0,229,255,0.25);
+    --glow2:     0 0 20px rgba(123,47,255,0.3);
+  }
+
+  html { font-size: 16px; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Rajdhani', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* scanlines */
+  body::before {
+    content: ''; position: fixed; inset: 0; z-index: 9999; pointer-events: none;
+    background: repeating-linear-gradient(0deg,
+      transparent, transparent 2px,
+      rgba(0,0,0,0.06) 2px, rgba(0,0,0,0.06) 4px);
+  }
+
+  /* grid bg */
+  body::after {
+    content: ''; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(30,34,53,0.4) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(30,34,53,0.4) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  .app {
+    position: relative; z-index: 1;
+    max-width: 860px; margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+
+  /* ── Header ───────────────────────────────────────────────────────── */
+  header {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    border-bottom: 1px solid var(--border-hi);
+    padding-bottom: 20px; margin-bottom: 40px;
+  }
+  .logo-eyebrow {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.65rem; letter-spacing: 0.25em;
+    color: var(--accent); margin-bottom: 4px;
+  }
+  .logo-title {
+    font-size: 2.6rem; font-weight: 700; line-height: 1;
+    letter-spacing: -0.02em; color: #fff;
+  }
+  .logo-title span { color: var(--accent); }
+  .header-meta {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.7rem; color: var(--text-dim);
+    text-align: right; line-height: 1.8;
+  }
+  .status-dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--safe); margin-right: 6px;
+    box-shadow: 0 0 6px var(--safe);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* ── Section label ────────────────────────────────────────────────── */
+  .section-label {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.65rem; letter-spacing: 0.2em;
+    color: var(--text-dim); margin-bottom: 12px;
+  }
+
+  /* ── 2-column upload grid ─────────────────────────────────────────── */
+  .upload-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  @media (max-width: 580px) {
+    .upload-grid { grid-template-columns: 1fr; }
+  }
+
+  /* ── Drop zone card ───────────────────────────────────────────────── */
+  .drop-card {
+    position: relative;
+    background: var(--panel);
+    border: 1px dashed var(--border-hi);
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .drop-card::before {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    opacity: 0; transition: opacity 0.3s;
+  }
+  /* dump card glow colour */
+  .drop-card.dump-card::before {
+    background: radial-gradient(ellipse at 50% 0%, rgba(0,229,255,0.07) 0%, transparent 70%);
+  }
+  /* model card glow colour */
+  .drop-card.model-card::before {
+    background: radial-gradient(ellipse at 50% 0%, rgba(123,47,255,0.09) 0%, transparent 70%);
+  }
+  .drop-card:hover::before,
+  .drop-card.dragover::before { opacity: 1; }
+
+  .drop-card.dragover {
+    border-style: solid;
+    border-color: var(--accent);
+    box-shadow: var(--glow);
+  }
+  .drop-card.has-file.dump-card  { border-style: solid; border-color: var(--accent); }
+  .drop-card.has-file.model-card { border-style: solid; border-color: var(--accent2); box-shadow: var(--glow2); }
+
+  /* card inner padding */
+  .drop-card-body {
+    padding: 32px 24px 28px;
+    display: flex; flex-direction: column;
+    align-items: center; text-align: center;
+    flex: 1;
+  }
+
+  /* icon box */
+  .drop-icon {
+    width: 42px; height: 42px; margin-bottom: 14px;
+    border: 1px solid var(--border-hi);
+    display: flex; align-items: center; justify-content: center;
+    background: var(--surface);
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  .drop-card.has-file.dump-card  .drop-icon { border-color: var(--accent);  box-shadow: 0 0 12px rgba(0,229,255,0.25); }
+  .drop-card.has-file.model-card .drop-icon { border-color: var(--accent2); box-shadow: 0 0 12px rgba(123,47,255,0.3); }
+  .drop-icon svg { width: 18px; height: 18px; }
+
+  .drop-card-title {
+    font-size: 0.85rem; font-weight: 700;
+    color: #fff; letter-spacing: 0.04em; margin-bottom: 6px;
+  }
+  .drop-card-sub {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.62rem; color: var(--text-dim);
+    letter-spacing: 0.06em; line-height: 1.6;
+  }
+  .drop-card-sub span { color: var(--accent); }
+  .drop-card.model-card .drop-card-sub span { color: var(--accent2); }
+
+  /* file strip at bottom of card */
+  .card-strip {
+    display: none;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 8px 14px;
+    align-items: center; gap: 10px;
+  }
+  .card-strip.visible { display: flex; }
+  .card-strip-name {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.7rem; color: var(--text-mono);
+    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .card-strip-size {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.65rem; color: var(--text-dim); white-space: nowrap;
+  }
+  .card-strip-remove {
+    background: none; border: none; cursor: pointer;
+    color: var(--text-dim); line-height: 1; font-size: 0.75rem;
+    transition: color 0.15s; padding: 0 2px;
+  }
+  .card-strip-remove:hover { color: var(--danger); }
+
+  /* hidden inputs */
+  input[type="file"] { display: none; }
+
+  /* ── Analyze button ───────────────────────────────────────────────── */
+  .analyze-btn {
+    width: 100%; padding: 14px 24px;
+    background: var(--accent); border: none; outline: none;
+    cursor: pointer; color: #07080d;
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 1rem; font-weight: 700;
+    letter-spacing: 0.2em; text-transform: uppercase;
+    position: relative; overflow: hidden;
+    transition: opacity 0.2s, box-shadow 0.2s;
+    margin-bottom: 28px;
+  }
+  .analyze-btn:hover:not(:disabled) { box-shadow: var(--glow); }
+  .analyze-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .analyze-btn::after {
+    content: ''; position: absolute; inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent);
+    transform: translateX(-100%);
+  }
+  .analyze-btn.scanning::after { animation: shimmer 1.2s ease-in-out infinite; }
+  @keyframes shimmer { 100%{ transform: translateX(100%); } }
+
+  /* ── Progress ─────────────────────────────────────────────────────── */
+  .progress-wrap { display: none; margin-bottom: 28px; }
+  .progress-wrap.visible { display: block; }
+
+  .progress-header {
+    display: flex; justify-content: space-between;
+    align-items: baseline; margin-bottom: 8px;
+  }
+  .progress-label {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.68rem; color: var(--accent); letter-spacing: 0.15em;
+  }
+  .progress-pct {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.68rem; color: var(--text-dim);
+  }
+  .progress-track {
+    height: 2px; background: var(--border);
+    overflow: hidden; margin-bottom: 14px;
+  }
+  .progress-bar {
+    height: 100%; width: 0%; background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+    transition: width 0.4s cubic-bezier(0.4,0,0.2,1);
+  }
+  .progress-steps { display: flex; flex-direction: column; gap: 4px; }
+  .progress-step {
+    display: flex; align-items: center; gap: 10px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.65rem; color: var(--text-dim); letter-spacing: 0.08em;
+    opacity: 0; transform: translateX(-6px);
+    transition: opacity 0.25s ease, transform 0.25s ease, color 0.25s;
+  }
+  .progress-step.visible { opacity: 1; transform: none; }
+  .progress-step.done    { color: var(--safe); }
+  .progress-step.active  { color: var(--accent); }
+  .step-icon {
+    width: 14px; height: 14px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.6rem;
+  }
+  .step-icon.spin::after {
+    content: ''; display: block; width: 8px; height: 8px;
+    border: 1px solid var(--accent); border-top-color: transparent;
+    border-radius: 50%; animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Error ────────────────────────────────────────────────────────── */
+  .error-block {
+    display: none; background: rgba(255,56,96,0.06);
+    border: 1px solid rgba(255,56,96,0.3);
+    padding: 14px 18px; margin-bottom: 24px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.78rem; color: var(--danger);
+  }
+  .error-block.visible { display: block; }
+
+  /* ── Results ──────────────────────────────────────────────────────── */
+  .results { display: none; }
+  .results.visible { display: block; }
+
+  .results-header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 16px 20px; background: var(--panel);
+    border: 1px solid var(--border); border-bottom: none;
+  }
+  .results-verdict {
+    font-size: 1.1rem; font-weight: 700;
+    letter-spacing: 0.05em; flex: 1;
+  }
+  .results-verdict.clean  { color: var(--safe); }
+  .results-verdict.threat { color: var(--danger); }
+  .results-filename {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.7rem; color: var(--text-dim);
+  }
+
+  .threat-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    border: 1px solid var(--border); border-top: none;
+    margin-bottom: 24px;
+  }
+  @media (max-width: 560px) { .threat-grid { grid-template-columns: 1fr; } }
+
+  .threat-card {
+    background: var(--surface); padding: 20px 18px;
+    border-right: 1px solid var(--border);
+    position: relative; overflow: hidden;
+  }
+  .threat-card:last-child { border-right: none; }
+  .threat-card::before {
+    content: ''; position: absolute;
+    top: 0; left: 0; right: 0; height: 2px;
+  }
+  .threat-card.detected::before { background: var(--danger); }
+  .threat-card.clean::before    { background: var(--safe); }
+  .threat-card.detected         { background: rgba(255,56,96,0.04); }
+
+  .threat-card-label {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.65rem; color: var(--text-dim);
+    letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 10px;
+  }
+  .threat-card-status { font-size: 1rem; font-weight: 700; letter-spacing: 0.06em; }
+  .threat-card.detected .threat-card-status { color: var(--danger); }
+  .threat-card.clean    .threat-card-status { color: var(--safe); }
+
+  .threat-badge {
+    display: inline-block; margin-top: 8px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.6rem; letter-spacing: 0.12em; padding: 2px 8px;
+  }
+  .threat-card.detected .threat-badge {
+    background: rgba(255,56,96,0.15); color: var(--danger);
+    border: 1px solid rgba(255,56,96,0.3);
+  }
+  .threat-card.clean .threat-badge {
+    background: rgba(0,229,160,0.1); color: var(--safe);
+    border: 1px solid rgba(0,229,160,0.25);
+  }
+
+  .features-block {
+    background: var(--panel);
+    border: 1px solid var(--border); padding: 16px 20px;
+  }
+  .features-title {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.65rem; color: var(--text-dim);
+    letter-spacing: 0.2em; margin-bottom: 14px;
+  }
+  .features-table { width: 100%; border-collapse: collapse; }
+  .features-table tr+tr td { border-top: 1px solid var(--border); }
+  .features-table td {
+    padding: 8px 0;
+    font-family: 'Share Tech Mono', monospace; font-size: 0.75rem;
+  }
+  .features-table td:first-child { color: var(--text-dim); width: 55%; }
+  .features-table td:last-child  { color: var(--accent); text-align: right; }
+
+  /* ── Footer ───────────────────────────────────────────────────────── */
+  footer {
+    margin-top: 60px; padding-top: 20px;
+    border-top: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .footer-left {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.65rem; color: var(--text-dim); letter-spacing: 0.1em;
+  }
+  .footer-plugins { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .plugin-tag {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.58rem; color: var(--text-dim);
+    border: 1px solid var(--border); padding: 2px 7px; letter-spacing: 0.06em;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header>
+    <div>
+      <div class="logo-eyebrow">volatility-based forensics</div>
+      <div class="logo-title">Mem<span>Scan</span></div>
+    </div>
+    <div class="header-meta">
+      <div><span class="status-dot"></span>SYSTEM READY</div>
+      <div>MEMORY THREAT ANALYSIS v1.0</div>
+    </div>
+  </header>
+
+  <!-- Upload section label -->
+  <div class="section-label">// upload files</div>
+
+  <!-- 2-column upload grid -->
+  <div class="upload-grid">
+
+    <!-- LEFT: Memory dump -->
+    <div class="drop-card dump-card" id="dump-card"
+         onclick="document.getElementById('file-input').click()"
+         ondragover="cardDragOver(event,'dump-card')"
+         ondragleave="cardDragLeave('dump-card')"
+         ondrop="cardDrop(event,'dump')">
+      <div class="drop-card-body">
+        <div class="drop-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#00e5ff"
+               stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </div>
+        <div class="drop-card-title">Memory Dump</div>
+        <div class="drop-card-sub">
+          Drop or click to browse<br>
+          <span>.raw</span> · <span>.lime</span> · <span>.mem</span> ·
+          <span>.vmem</span> · <span>.dmp</span>
+        </div>
+      </div>
+      <div class="card-strip" id="dump-strip">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#00e5ff"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+          <polyline points="13 2 13 9 20 9"/>
+        </svg>
+        <span class="card-strip-name" id="dump-strip-name">—</span>
+        <span class="card-strip-size" id="dump-strip-size">—</span>
+        <button class="card-strip-remove" onclick="removeDump(event)">✕</button>
+      </div>
+    </div>
+
+    <!-- RIGHT: Model -->
+    <div class="drop-card model-card" id="model-card"
+         onclick="document.getElementById('model-input').click()"
+         ondragover="cardDragOver(event,'model-card')"
+         ondragleave="cardDragLeave('model-card')"
+         ondrop="cardDrop(event,'model')">
+      <div class="drop-card-body">
+        <div class="drop-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#7b2fff"
+               stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <ellipse cx="12" cy="5" rx="9" ry="3"/>
+            <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+            <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+          </svg>
+        </div>
+        <div class="drop-card-title">ML Model</div>
+        <div class="drop-card-sub">
+          Drop or click to browse<br>
+          <span>.pkl</span> &nbsp;·&nbsp; optional, uses default if omitted
+        </div>
+      </div>
+      <div class="card-strip" id="model-strip">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7b2fff"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <ellipse cx="12" cy="5" rx="9" ry="3"/>
+          <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+          <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+        </svg>
+        <span class="card-strip-name" id="model-strip-name">—</span>
+        <span class="card-strip-size" id="model-strip-size">—</span>
+        <button class="card-strip-remove" onclick="removeModel(event)">✕</button>
+      </div>
+    </div>
+
+  </div><!-- /upload-grid -->
+
+  <!-- hidden file inputs -->
+  <input type="file" id="file-input"
+       accept=".raw,.lime,.mem,.vmem,.bin,.dmp,.img,.dd" />
+  <input type="file" id="model-input"
+       accept=".pkl" />
+
+  <!-- Analyze -->
+  <button class="analyze-btn" id="analyze-btn" onclick="runAnalysis()" disabled>
+    <span id="btn-label">SCAN MEMORY DUMP</span>
+  </button>
+
+  <!-- Progress -->
+  <div class="progress-wrap" id="progress-wrap">
+    <div class="progress-header">
+      <span class="progress-label" id="progress-stage">INITIALIZING</span>
+      <span class="progress-pct"   id="progress-pct">0%</span>
+    </div>
+    <div class="progress-track">
+      <div class="progress-bar" id="progress-bar"></div>
+    </div>
+    <div class="progress-steps" id="progress-steps"></div>
+  </div>
+
+  <!-- Error -->
+  <div class="error-block" id="error-block"></div>
+
+  <!-- Results -->
+  <div class="results" id="results">
+    <div class="results-header">
+      <div class="results-verdict"  id="results-verdict">—</div>
+      <div class="results-filename" id="results-filename">—</div>
+    </div>
+    <div class="threat-grid"    id="threat-grid"></div>
+    <div class="features-block">
+      <div class="features-title">// extracted features</div>
+      <table class="features-table" id="features-table"></table>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer>
+    <div class="footer-left">PLUGINS LOADED</div>
+    <div class="footer-plugins">
+      <span class="plugin-tag">linux.pslist</span>
+      <span class="plugin-tag">linux.psscan</span>
+      <span class="plugin-tag">linux.hidden_modules</span>
+      <span class="plugin-tag">linux.sockstat</span>
+      <span class="plugin-tag">linux.lsof</span>
+    </div>
+  </footer>
+
+</div>
+<script defer src="/assets/app.js"></script>
+</body>
+</html>
