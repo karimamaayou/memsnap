@@ -16,6 +16,7 @@ cd assets && gcc -shared -fPIC evil.c -o evil.so && cd ..   # build injection li
 ./memsnap extract dumps/ assets/features.csv   # extract features
 ./memsnap train -i assets/features.csv -o assets/model.pkl  # train model
 ./memsnap detect dumps/memdump_...rootkit.raw   # detect threats
+./memsnap web                           # start web interface (FastAPI)
 ```
 
 ## Setup
@@ -64,7 +65,9 @@ All commands use the `./memsnap` entry point:
 | `./memsnap infect -i [components] -a [dir]` | Infect VM, optionally capture a dump |
 | `./memsnap extract <dumps_dir> [csv]` | Extract features from dumps -> `features.csv` |
 | `./memsnap train -i <csv> -o <model.pkl>` | Train AI model |
-| `./memsnap detect <dump> [-m model]` | Detect threats in a single dump |
+| `./memsnap detect <dump> [-m model]` | Detect threats in a single dump (CLI) |
+| `./memsnap web` | Launch web-based detection interface (FastAPI) |
+| `./memsnap test <dumps_dir>` | Batch run detection on all dumps in a directory |
 | `./memsnap vol <dump>` | Run raw Volatility 3 analysis |
 
 Examples:
@@ -73,7 +76,7 @@ Examples:
 ./memsnap extract dumps/ features.csv
 ./memsnap train -i features.csv -o assets/model.pkl
 ./memsnap detect dumps/memdump_...rootkit.raw
-./memsnap detect memdump.raw -m custom_model.pkl
+./memsnap web          # starts on http://localhost:8501
 ```
 
 Dumps are named `memdump_<timestamp>_<components>.raw`.
@@ -88,14 +91,17 @@ scripts/
   infect               -> infection & memory capture
   extract              -> feature extraction -> features.csv
   train                -> train AI model
-  detect               -> single‑dump verdict
-  vol                  -> raw Volatility 3 runner
+  detect               -> single‑dump CLI verdict
+  web                  -> FastAPI server for web UI
+  test                 -> batch detection script
 assets/
   diamorphine.ko       -> pre‑built rootkit module
   evil.so              -> pre‑built injection library
   model.pkl            -> trained classifier
   features.csv         -> current dataset
-  *.json.xz    -> Volatility3 symbol table for different kernel versions
+  index.html           -> web UI frontend
+  app.js               -> web UI logic
+  *.json.xz            -> Volatility3 symbol table (kernel 6.17.0-22)
 requirements.txt
 ```
 
