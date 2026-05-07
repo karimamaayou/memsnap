@@ -1,8 +1,8 @@
-/* ── State ──────────────────────────────────────────────────────────────────── */
+/* --  State -- */
 let selectedDump  = null;
 let selectedModel = null;
 
-/* ── Helpers ────────────────────────────────────────────────────────────────── */
+/* --  Helpers -- */
 function formatBytes(bytes) {
   if (bytes < 1024)      return bytes + ' B';
   if (bytes < 1024 ** 2) return (bytes / 1024).toFixed(1) + ' KB';
@@ -23,7 +23,7 @@ function clearResults() {
   hideError();
 }
 
-/* ── Drag-and-drop helpers ──────────────────────────────────────────────────── */
+/* --  Drag-and-drop helpers -- */
 function cardDragOver(e, cardId) {
   e.preventDefault();
   document.getElementById(cardId).classList.add('dragover');
@@ -41,7 +41,7 @@ function cardDrop(e, type) {
   else                  setModel(file);
 }
 
-/* ── Dump file ──────────────────────────────────────────────────────────────── */
+/* --  Dump file -- */
 function setDump(file) {
   selectedDump = file;
   document.getElementById('dump-card').classList.add('has-file');
@@ -62,7 +62,7 @@ function removeDump(e) {
   clearResults();
 }
 
-/* ── Model file ─────────────────────────────────────────────────────────────── */
+/* --  Model file -- */
 function setModel(file) {
   selectedModel = file;
   document.getElementById('model-card').classList.add('has-file');
@@ -79,7 +79,7 @@ function removeModel(e) {
   document.getElementById('model-strip').classList.remove('visible');
 }
 
-/* ── Analysis ───────────────────────────────────────────────────────────────── */
+/* --  Analysis -- */
 async function runAnalysis() {
   if (!selectedDump) return;
 
@@ -197,7 +197,7 @@ async function runAnalysis() {
   }
 }
 
-/* ── Render results ─────────────────────────────────────────────────────────── */
+/* --  Render results -- */
 function renderResults(data) {
   const verdictEl = document.getElementById('results-verdict');
   if (data.any_detected) {
@@ -242,7 +242,7 @@ function renderResults(data) {
   document.getElementById('results').classList.add('visible');
 }
 
-/* ── Attach event listeners after DOM is ready ──────────────────────────────── */
+/* --  Attach event listeners after DOM is ready -- */
 document.addEventListener('DOMContentLoaded', () => {
   const fileInput = document.getElementById('file-input');
   if (fileInput) {
