@@ -42,7 +42,8 @@
 // -- 1. Introduction --
 = Introduction
 
-Memory forensics is an essential technique for detecting advanced malware that
+#link("https://github.com/kmuratori/memsnap")[*Memsnap*]
+\- Memory forensics is an essential technique for detecting advanced malware that
 operates entirely in RAM, bypassing disk-based defenses. However, manual
 analysis of memory dumps is time-consuming and requires deep expertise.
 *MemSnap* automates this process by:
@@ -60,10 +61,6 @@ proof-of-concept pipeline.
 // -- 2. System Architecture --
 = System Architecture
 
-The pipeline consists of the following main stages:
-
-// TODO: update the pipeline
-
 #let pipeline = oxdraw(
   ```
   graph LR
@@ -71,7 +68,6 @@ The pipeline consists of the following main stages:
     B --> C[Extract Features<br/>Volatility 3]
     C --> D[Train Model<br/>Decision Tree]
     D --> E[Detect Threats<br/>cli / web]
-    E --> F[Report]
   ```,
   background: white,
   overrides: (
@@ -80,15 +76,13 @@ The pipeline consists of the following main stages:
       B: (fill: "#d1fae5", stroke: "#10b981", text: "#064e3b"),
       C: (fill: "#ffedd5", stroke: "#f97316", text: "#7c2d12"),
       D: (fill: "#fef9c3", stroke: "#eab308", text: "#713f12"),
-      E: (fill: "#cffafe", stroke: "#06b6d4", text: "#155e75"),
-      F: (fill: "#e0e7ff", stroke: "#6366f1", text: "#3730a3"),
+      E: (fill: "#e0e7ff", stroke: "#6366f1", text: "#3730a3"),
     ),
     edge_styles: (
       "A --> B": (color: "#94a3b8"),
       "B --> C": (color: "#94a3b8"),
       "C --> D": (color: "#94a3b8"),
       "D --> E": (color: "#94a3b8"),
-      "E --> F": (color: "#94a3b8"),
     ),
   ),
 )
@@ -100,37 +94,53 @@ The pipeline consists of the following main stages:
   caption: "MemSnap pipeline overview",
 )
 
-All commands are dispatched through a unified entry point ```sh memsnap```.
-Pre-built malware assets (kernel module and shared library) are stored in the
-`assets/` directory, so no compilation is required at runtime.
+#figure(
+  image("./media/tree.png"),
+  caption: "Repository Structure"
+)
+
 
 // -- 3. Infrastructure --
 = Infrastructure
 
 == Lightweight Virtual Machine
 
-A minimal Ubuntu 24.04 VM was prepared for the experiments. Unnecessary
-services, snap packages, and the graphical desktop were removed, leaving a
-headless system that idles at approximately *159 MB* of RAM. The hypervisor is
-configured with *512 MB* of memory, leaving ample room for malware execution
-and memory capture.
+A minimal Ubuntu 24.04 VM was prepared
+for the experiments.
+
+Unnecessary services, packages were removed,
+leaving a headless system that idles
+at approximately *159 MB* of RAM.
+
+The hypervisor is configured with *512
+MB* of memory, leaving ample room for
+malware execution and memory capture.
 
 - *Kernel version:* `6.17.0-22-generic`
-- *Build tools:* `git`, `build-essential`, `linux-headers-$(uname -r)` are
-  installed for compiling the rootkit module.
 
 == Memory Acquisition
 
-AVML (Azure VM Linux) from Microsoft is used to capture memory. It compresses
-dump files on-the-fly, reducing a 1 GB raw dump to approximately 180-200 MB.
-AVML is automatically downloaded into `$HOME/.local/bin/` on first use.
+#link("https://github.com/microsoft/avml")[AVML]
+is used to capture memory. It compresses
+dump files on-the-fly, reducing a *1 GB* raw dump to approximately *180-200 MB*.
+
+AVML is automatically downloaded into ```sh $HOME/.local/bin/``` on first use.
 
 == Volatility 3 and Symbol Table
 
-The Volatility 3 framework (v2.28.0) is installed inside a Python virtual
-environment. A pre-generated ISF symbol table for kernel `6.17.0-22-generic`
+The
+#link("https://github.com/volatilityfoundation/volatility3")[Volatility 3]
+framework (v2.28.0) is installed inside a Python virtual
+environment.
+
+A pre-generated ISF symbol table for kernel `6.17.0-22-generic`
 is placed in `assets/`, enabling all plugins to function without additional
 setup.
+
+Build ISF symbol table for your specific kernel version
+by following
+#link("https://medium.com/@alirezataghikhani1998/build-a-custom-linux-profile-for-volatility3-640afdaf161b")[this]
+tutorial.
 
 // -- 4. Malware Components --
 = Malware Components
@@ -138,41 +148,48 @@ setup.
 Three distinct threat types are used to train the AI model. Each leaves a
 characteristic memory artifact that can be extracted by Volatility.
 
-== Rootkit (Diamorphine)
+== Rootkit
 
-The open-source kernel module *Diamorphine* is pre-compiled for the VM's
-kernel. It hides itself from module listings, hides processes (e.g., PID 1)
-from `/proc`, and hooks syscalls such as `getdents64`. After loading, the
-module is invisible to `lsmod`, but Volatility's `linux.hidden_modules` plugin
+The kernel module
+#link("https://github.com/m0nad/Diamorphine")[Diamorphine]
+hides itself from module listings, hides processes
+from ```sh /proc```.
+
+After loading, the
+module is invisible to ```sh lsmod```, but Volatility's `linux.hidden_modules` plugin
 can detect it by comparing the kernel's module list with the list of loaded
-modules (or by scanning for hidden structures).
+modules.
 
-== Code Injection (LD_PRELOAD)
+== Code Injection
 
 A malicious shared library (`evil.so`) is injected into a `sleep 9999` process
-using the `LD_PRELOAD` environment variable. To make this injection detectable
-in memory dumps, a unique marker file `/tmp/injection_marker` is created and
-kept open by a dedicated `tail -f` sentinel process. Volatility's
-`linux.lsof.Lsof` plugin reads the kernel's
-`task_struct` → `files` → `fdtable` chain directly from physical memory, so it
-can see the open file descriptor even if the rootkit hides the process from
-`/proc`.
+using the `LD_PRELOAD` environment variable.
 
-== Backdoor (Bind Shell)
+To make this injection detectable
+in memory dumps, a unique marker file ```sh /tmp/injection_marker``` is created and
+kept open by a dedicated ```sh tail``` process.
+
+Volatility's
+`linux.lsof.Lsof` plugin reads the kernel' fdtable chain directly from physical memory, so it
+can see the open file descriptor even if the rootkit hides the process from
+```sh /proc```.
+
+== Backdoor
 
 The `ncat` utility is installed on the VM, and a listening TCP socket is bound
 to port *4444* with a shell attached. This opens a backdoor that an attacker
 could use to gain remote access. The `linux.sockstat` plugin reveals all open
-sockets; a filter for `Source Port == 4444` and `State == LISTEN` identifies
+sockets;
+
+a filter for ```c Source Port == 4444``` and ```c State == LISTEN``` identifies
 the backdoor.
 
 // -- 5. Feature Extraction --
 = Feature Extraction
 
-For each memory dump, the following Volatility 3 plugins are executed (in
-parallel where possible):
+For each memory dump, the following Volatility 3 plugins are executed:
 
-- `linux.pslist` / `linux.psscan`
+- `linux.psscan`
 - `linux.check_syscall`
 - `linux.hidden_modules`
 - `linux.sockstat`
@@ -238,16 +255,16 @@ of the three threat categories:
     table.header(
       [*Dump Name*], [*Rootkit*], [*Injection*], [*Backdoor*],
     ),
-    [`memdump_..._clean.raw`],                    [0], [0], [0],
-    [`memdump_..._rootkit.raw`],                  [1], [0], [0],
-    [`memdump_..._injection.raw`],                [0], [1], [0],
-    [`memdump_..._backdoor.raw`],                 [0], [0], [1],
-    [`memdump_..._rootkit_injection.raw`],        [1], [1], [0],
-    [`memdump_..._injection_backdoor.raw`],       [0], [1], [1],
-    [`memdump_..._rootkit_backdoor.raw`],         [1], [0], [1],
-    [`memdump_..._rootkit_injection_backdoor.raw`],[1], [1], [1],
+    [`memdump_..._clean.raw`],                      [0], [0], [0],
+    [`memdump_..._rootkit.raw`],                    [1], [0], [0],
+    [`memdump_..._injection.raw`],                  [0], [1], [0],
+    [`memdump_..._backdoor.raw`],                   [0], [0], [1],
+    [`memdump_..._rootkit_injection.raw`],          [1], [1], [0],
+    [`memdump_..._injection_backdoor.raw`],         [0], [1], [1],
+    [`memdump_..._rootkit_backdoor.raw`],           [1], [0], [1],
+    [`memdump_..._rootkit_injection_backdoor.raw`], [1], [1], [1],
   ),
-  caption: [Training dataset - all combinations of threat labels],
+  caption: [Training dataset],
 )
 
 The small size is sufficient for a proof-of-concept because the chosen features
@@ -255,19 +272,27 @@ provide strong, nearly perfect separation for two of the three classes.
 
 == Classifier
 
-A *multi-output Decision Tree* classifier (one tree per label) was chosen for
-its simplicity and interpretability. Using leave-one-out cross-validation
-(LOO-CV), the model achieves:
+A
+#link("https://scikit-learn.org/1.5/auto_examples/tree/plot_tree_regression_multioutput.html")[multi-output Decision Tree]
+classifier was chosen for
+its simplicity and interpretability.
+Using 
+#link("https://medium.com/@pacosun/one-out-all-in-leave-one-out-cross-validation-explained-409df5ff6385a")[leave-one-out cross-validation]
+, the model achieves:
 
-- *Rootkit detection:* 1.00 accuracy
-- *Injection detection:* 1.00 accuracy
-- *Backdoor detection:* ≈0.62 accuracy (exact match across all three labels)
-
-The limited backdoor performance is due to a single confounding sample (see
-Section 7.1). The final model is saved as `assets/model.pkl` and loaded by
-both the CLI and web detection tools.
+#figure(
+  table(
+    columns: 4,
+    table.header(
+      [], [Rootkit], [Injection], [Backdoor]
+    ),
+    [Accuracy], [`1.00`], [`1.00`], [`0.38`],
+  ),
+  caption: "Model's accuracy",
+)
 
 // -- 7. Results and Limitations --
+/*
 = Results and Limitations
 
 == Backdoor Detection Issue
@@ -295,9 +320,10 @@ additional injection/backdoor dumps is a priority for future work.
 Feature extraction takes about *4-5 minutes per dump* because each Volatility
 plugin runs sequentially. Parallelising the plugin execution and caching
 intermediate results would significantly reduce this time.
+*/
 
 // -- 8. Demo / Showcase --
-= Demo / Showcase
+= Showcase
 
 // helper: reusable shaded code block style
 #let cmd(body) = block(
@@ -314,23 +340,31 @@ Deploys the selected malware component and optionally triggers an AVML memory
 capture. The `-c` flag captures a dump immediately after infection.
 
 ```bash
-memsnap infect --type rootkit_injection_backdoor -c
+memsnap infect -a ~/shared -i rootkit,injection,backdoor
 ```
 
+/*
 ```
-[*] Loading Diamorphine rootkit module...        [OK]
-[*] Injecting evil.so via LD_PRELOAD...          [OK]
-[*] Starting ncat bind shell on port 4444...     [OK]
-[*] Capturing memory dump with AVML...           [OK]
-    → dumps/memdump_20260506_110201_rootkit_injection_backdoor.raw.lz4
+[*] Rootkit appears to be already loaded (detected via /sys).
+[+] Code injected (LD_PRELOAD) into PID 1634
+[+] Marker sentinel PID 1636 holding /tmp/injection_marker open
+Reading package lists... Done
+Building dependency tree... Done
+Reading state information... Done
+ncat is already the newest version (7.94+git20230807.3be01efb1+dfsg-3build2).
+0 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.
+[+] Bind shell on port 4444
+[+] Infection complete.
+[*] Using system-installed avml: /home/ubuntu/.local/bin/avml
+[*] Capturing memory to /home/ubuntu/shared/memdump_20260511_153555_rootkit_injection_backdoor.raw ...
+[+] Memory dump saved: /home/ubuntu/shared/memdump_20260511_153555_rootkit_injection_backdoor.raw
 ```
+*/
 
-THE IMAGE `cmd_infect.png` GOES HERE.
-// TODO: insert the image bellow
-// #figure(
-//   image("./media/cmd_infect.png", width: 100%),
-//   caption: [`memsnap infect` - infection and capture output],
-// )
+#figure(
+  image("./media/cmd_infect.png", width: 100%),
+  caption: [infection and capture dump],
+)
 
 == Feature Extraction
 
@@ -338,23 +372,18 @@ Runs all Volatility 3 plugins against every dump in a directory and writes the
 resulting numeric features to `features.csv`.
 
 ```bash
-memsnap extract dumps/ assets/features.csv
+memsnap extract ~/shared ~/demo
 ```
 
-```
-[*] Processing memdump_..._clean.raw            [1/8]
-[*] Processing memdump_..._rootkit.raw          [2/8]
-...
-[*] Processing memdump_..._rootkit_injection_backdoor.raw  [8/8]
-[+] Features written to assets/features.csv
-```
+#figure(
+  image("./media/cmd_extract_1.png", width: 100%),
+  caption: [Volatility plugin execution and CSV output],
+)
 
-THE IMAGE `cmd_extract.png` GOES HERE.
-// TODO: insert the image bellow
-// #figure(
-//   image("./media/cmd_extract.png", width: 100%),
-//   caption: [`memsnap extract` - Volatility plugin execution and CSV output],
-// )
+#figure(
+  image("./media/feats.png", width: 100%),
+  caption: [Extracted features],
+)
 
 == Model Training
 
@@ -362,24 +391,13 @@ Trains the multi-output Decision Tree classifier with LOO-CV and saves the
 fitted model to disk.
 
 ```bash
-memsnap train -i assets/features.csv -o assets/model.pkl
+memsnap train -i ./assets/features.csv -o ./model.pkl
 ```
 
-```
-[*] Loaded 8 samples, 6 features, 3 labels
-[*] Running leave-one-out cross-validation...
-    Rootkit   accuracy : 1.00
-    Injection accuracy : 1.00
-    Backdoor  accuracy : 0.62  ← 1 confounding sample (see §7.1)
-[+] Model saved to assets/model.pkl
-```
-
-THE IMAGE `cmd_train.png` GOES HERE.
-// TODO: insert the image bellow
-// #figure(
-//   image("./media/cmd_train.png", width: 100%),
-//   caption: [`memsnap train` - LOO-CV results and model serialisation],
-// )
+#figure(
+  image("./media/cmd_train.png", width: 100%),
+  caption: [LOO-CV results and model serialisation],
+)
 
 == CLI Detection
 
@@ -387,22 +405,15 @@ Given a single dump, extracts features on-the-fly and outputs a per-label
 verdict.
 
 ```bash
-memsnap detect dumps/memdump_20260506_110614_injection.raw
+memsnap detect \
+  -m ./assets/model.pkl \
+  ./dumps_1/memdump_20260505_122730_rootkit_backdoor.raw
 ```
 
-```
-Extracting features...
-Rootkit   : not detected
-Injection : detected
-Backdoor  : not detected
-```
-
-THE IMAGE `cmd_detect.png` GOES HERE.
-// TODO: insert the image bellow
-// #figure(
-//   image("./media/cmd_detect.png", width: 100%),
-//   caption: [`memsnap detect` - single-dump verdict],
-// )
+#figure(
+  image("./media/cmd_detect.png", width: 100%),
+  caption: [Single-dump verdict],
+)
 
 == Web Interface
 
@@ -413,68 +424,23 @@ model. Real-time progress is streamed via Server-Sent Events.
 memsnap web
 ```
 
-```
-INFO:     Started server process [3821]
-INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-```
+#figure(
+  image("./media/web_upload.png", width: 100%),
+  caption: [Upload the dump and model],
+)
 
-THE IMAGE `web_upload.png` GOES HERE.
-// TODO: insert the image bellow
-// #figure(
-//   image("./media/web_upload.png", width: 100%),
-//   caption: [Web interface - upload page],
-// )
+#figure(
+  image("./media/web_progress.png", width: 100%),
+  caption: [Extraction features],
+)
 
-THE IMAGE `web_progress.png` GOES HERE.
-// TODO: insert the image bellow
-// #figure(
-//   image("./media/web_progress.png", width: 100%),
-//   caption: [Web interface - real-time analysis progress via SSE],
-// )
-
-THE IMAGE `web_results.png` GOES HERE.
-// TODO: insert the image bellow
-// #figure(
-//   image("./media/web_results.png", width: 100%),
-//   caption: [Web interface - threat verdict and extracted feature values],
-// )
+#figure(
+  image("./media/web_results.png", width: 100%),
+  caption: [Threat verdict],
+)
 
 The interface also displays the extracted feature values, giving the analyst
 insight into the detection rationale.
-
-== Batch Testing
-
-Runs detection across every dump in a directory and prints a summary verdict
-for each file.
-
-```bash
-memsnap test dumps/
-```
-
-```
-=== memdump_..._clean.raw ===
-Rootkit   : not detected
-Injection : not detected
-Backdoor  : not detected
-
-=== memdump_..._rootkit.raw ===
-Rootkit   : detected
-Injection : not detected
-Backdoor  : not detected
-
-=== memdump_..._rootkit_injection_backdoor.raw ===
-Rootkit   : detected
-Injection : detected
-Backdoor  : detected
-...
-```
-
-THE IMAGE `cmd_test.png` GOES HERE.
-// TODO: insert the image bellow
-// #figure(
-//   image("./media/cmd_test.png", width: 100%),
-//   caption: [`memsnap test` - batch detection across all labelled dumps],
-// )
 
 // -- 9. Conclusion --
 = Conclusion
@@ -504,49 +470,6 @@ detection, it provides a solid foundation for further research and development.
   grows.
 - Package the full tool (including the VM setup) into a single virtual
   appliance for educational use.
-
-// -- Appendix A --
-#heading(numbering: none)[Appendix A - Repository Structure]
-
-#figure(
-  image("./media/tree.png"),
-  caption: "Repository Structure"
-)
-
-/*
-```
-memsnap/
-    memsnap                # unified entry script
-    scripts/
-        infect             # infection & capture
-        extract            # feature extraction
-        train              # model training
-        detect             # CLI detection
-        web                # FastAPI web server
-        test               # batch detection
-    assets/
-        diamorphine.ko     # pre-built rootkit module
-        evil.so            # pre-built injection library
-        model.pkl          # trained classifier
-        features.csv       # dataset
-        *.json.xz          # Volatility3 ISF symbol table
-        index.html         # web UI frontend
-        app.js             # web UI logic
-    requirements.txt
-    README.md
-
-```
-*/
-
-// -- Appendix B --
-#heading(numbering: none)[Appendix B - Reproducing the Experiments]
-
-+ Set up a lightweight Ubuntu 24.04 VM (512 MB RAM).
-+ Clone the repository and run the setup commands from the README.
-+ Generate the dataset: ```sh memsnap infect -c && ./generate_dumps.sh```
-+ Extract features: ```sh memsnap extract dumps/ assets/features.csv```
-+ Train the model: ```sh memsnap train -i assets/features.csv -o assets/model.pkl```
-+ Test a dump: ```sh memsnap detect dumps/...rootkit.raw```
 
 // }
 // END
