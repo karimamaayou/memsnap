@@ -10,7 +10,11 @@ INSTALL_COMPLETION=false
 ACTION=""
 CAPTURE=false
 OUTPUT_DIR="."
+
+# FIX: persist queue across invocations
+QUEUE_FILE="${XDG_RUNTIME_DIR:-/tmp}/.memsnap_queue"
 SELECTED=()
+[ -f "$QUEUE_FILE" ] && mapfile -t SELECTED < "$QUEUE_FILE"
 
 usage() {
     echo "Usage: $0 [options]"
@@ -25,16 +29,28 @@ usage() {
     exit 1
 }
 
+_save_queue() {
+    printf '%s\n' "${SELECTED[@]}" > "$QUEUE_FILE"
+}
+
+_clear_queue() {
+    SELECTED=()
+    rm -f "$QUEUE_FILE"
+}
+
 while getopts "IA:D:lrRa:s" opt; do
     case $opt in
         I) INSTALL_COMPLETION=true ;;
-        A) SELECTED+=("$OPTARG") ;;
+        A) SELECTED+=("$OPTARG")
+           _save_queue
+           ;;
         D)
             new=()
             for a in "${SELECTED[@]}"; do
                 [ "$a" != "$OPTARG" ] && new+=("$a")
             done
             SELECTED=("${new[@]}")
+            _save_queue
             ;;
         l) echo "${SELECTED[*]:-none}"; exit 0 ;;
         r) ACTION="install" ;;
@@ -52,7 +68,6 @@ if $INSTALL_COMPLETION; then
     COMPLETION_FILE="/tmp/memsnap-completion.bash"
     cat > "$COMPLETION_FILE" << 'EOF'
 #!/usr/bin/env bash
-# completion for memsnap infect
 _attack_list="rootkit injection backdoor reverse_shell ptrace_injection hollowing deleted_exe persistence cred_scrape cryptominer"
 _memsnap_infect_completion() {
     local cur prev cmd
@@ -67,13 +82,13 @@ _memsnap_infect_completion() {
         fi
         if [ "${COMP_WORDS[1]}" = "infect" ]; then
             case "$prev" in
-                -A|-D|-r|-R) COMPREPLY=( $(compgen -W "$_attack_list" -- "$cur") ); return ;;
+                -A|-D) COMPREPLY=( $(compgen -W "$_attack_list" -- "$cur") ); return ;;
                 *) COMPREPLY=( $(compgen -W "-l -r -R -A -D -a -s -I" -- "$cur") ); return ;;
             esac
         fi
     elif [[ "$cmd" == "./scripts/infect" ]]; then
         case "$prev" in
-            -A|-D|-r|-R) COMPREPLY=( $(compgen -W "$_attack_list" -- "$cur") ); return ;;
+            -A|-D) COMPREPLY=( $(compgen -W "$_attack_list" -- "$cur") ); return ;;
             *) COMPREPLY=( $(compgen -W "-l -r -R -A -D -a -s -I" -- "$cur") ); return ;;
         esac
     fi
@@ -112,6 +127,9 @@ done
 
 echo "[+] $ACTION complete."
 
+# FIX: clear queue after running so it doesn't re-run stale attacks
+_clear_queue
+
 if $CAPTURE; then
     AVML_DIR="$HOME/.local/bin"
     AVML_BIN="$AVML_DIR/avml"
@@ -128,6 +146,7 @@ if $CAPTURE; then
     done
     [ ${#comps[@]} -eq 0 ] && comps=("clean")
 
+    # FIX: save/restore IFS so mutation doesn't leak
     old_IFS="$IFS"
     IFS=_
     filename="memdump_${ts}_${comps[*]}.raw"
