@@ -21,7 +21,7 @@ usage() {
     echo "  -r          Run queued attacks (install)"
     echo "  -R          Reverse queued attacks (clean)"
     echo "  -s          Show active attacks"
-    echo "  -a [dir]    Capture memory after -r/-R (optional dir)"
+    echo "  -a <dir>    Capture memory after -r/-R (dir required)"
     exit 1
 }
 
@@ -30,15 +30,17 @@ while getopts "IA:D:lrRa:s" opt; do
         I) INSTALL_COMPLETION=true ;;
         A) SELECTED+=("$OPTARG") ;;
         D)
-            for i in "${!SELECTED[@]}"; do
-                [ "${SELECTED[$i]}" = "$OPTARG" ] && unset 'SELECTED[$i]'
+            new=()
+            for a in "${SELECTED[@]}"; do
+                [ "$a" != "$OPTARG" ] && new+=("$a")
             done
+            SELECTED=("${new[@]}")
             ;;
         l) echo "${SELECTED[*]:-none}"; exit 0 ;;
         r) ACTION="install" ;;
         R) ACTION="clean" ;;
         a) CAPTURE=true
-           [ -n "${!OPTIND}" ] && [[ "${!OPTIND}" != -* ]] && { OUTPUT_DIR="${!OPTIND}"; OPTIND=$((OPTIND+1)); }
+           OUTPUT_DIR="$OPTARG"
            ;;
         s) ACTION="status" ;;
         *) usage ;;
@@ -59,12 +61,10 @@ _memsnap_infect_completion() {
     cmd="${COMP_WORDS[0]}"
 
     if [[ "$cmd" == "./memsnap" || "$cmd" == "memsnap" ]]; then
-        # first argument → suggest subcommands (at least "infect")
         if [ $COMP_CWORD -eq 1 ]; then
             COMPREPLY=( $(compgen -W "infect" -- "$cur") )
             return
         fi
-        # after "infect" → complete its options
         if [ "${COMP_WORDS[1]}" = "infect" ]; then
             case "$prev" in
                 -A|-D|-r|-R) COMPREPLY=( $(compgen -W "$_attack_list" -- "$cur") ); return ;;
@@ -127,8 +127,12 @@ if $CAPTURE; then
         [ -f "/tmp/.${name}_active" ] && comps+=("$name")
     done
     [ ${#comps[@]} -eq 0 ] && comps=("clean")
+
+    old_IFS="$IFS"
     IFS=_
     filename="memdump_${ts}_${comps[*]}.raw"
+    IFS="$old_IFS"
+
     mkdir -p "$OUTPUT_DIR"
     echo "[*] Capturing to $OUTPUT_DIR/$filename ..."
     sudo "$AVML_BIN" --compress "$OUTPUT_DIR/$filename"
