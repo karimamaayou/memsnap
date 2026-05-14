@@ -1,0 +1,18 @@
+install_ptrace_injection() {
+    [ -f /tmp/.ptrace_injection_active ] && return 0
+    /usr/bin/sleep 9999 &
+    local victim=$!
+    sleep 1
+    "$ASSETS_DIR/build/ptrace_inject" "$victim"
+    echo "$victim" > /tmp/ptrace_injection_victim.pid
+    touch /tmp/.ptrace_injection_active
+    echo "[+] Ptrace injection deployed (victim PID $victim)"
+}
+clean_ptrace_injection() {
+    if [ -f /tmp/ptrace_injection_victim.pid ]; then
+        kill $(cat /tmp/ptrace_injection_victim.pid) 2>/dev/null || true
+        rm -f /tmp/ptrace_injection_victim.pid
+    fi
+    rm -f /tmp/.ptrace_injection_active
+    echo "[+] Ptrace injection cleaned"
+}

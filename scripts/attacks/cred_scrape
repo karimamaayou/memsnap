@@ -1,0 +1,10 @@
+install_cred_scrape() {
+    [ -f /tmp/.cred_scrape_active ] && return 0
+    sudo cat /etc/shadow >/dev/null 2>&1 || true
+    touch /tmp/.cred_scrape_active
+    echo "[+] Credential scraping attempted"
+}
+clean_cred_scrape() {
+    rm -f /tmp/.cred_scrape_active
+    echo "[+] Cred scrape cleaned"
+}

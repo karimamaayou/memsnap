@@ -1,0 +1,12 @@
+install_cryptominer() {
+    [ -f /tmp/.cryptominer_active ] && return 0
+    "$ASSETS_DIR/build/miner_sim"
+    touch /tmp/.cryptominer_active
+    echo "[+] Cryptominer simulation deployed"
+}
+clean_cryptominer() {
+    # The miner process cannot be reliably killed without modifying
+    # the C binary. Remove the flag only.
+    rm -f /tmp/.cryptominer_active
+    echo "[!] Cryptominer flag removed – miner may still be running"
+}

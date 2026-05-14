@@ -10,7 +10,7 @@ cd memsnap
 sudo apt install -y libsnappy-dev build-essential linux-headers-$(uname -r)
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cd assets && gcc -shared -fPIC evil.c -o evil.so && cd ..   # build injection library
+make
 # Rootkit: clone, patch, build and copy diamorphine.ko into assets/ (see below)
 ./memsnap infect -i -a dumps/          # infect all + capture dump
 ./memsnap extract dumps/ assets/features.csv   # extract features

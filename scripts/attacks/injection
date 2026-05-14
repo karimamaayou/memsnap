@@ -1,0 +1,17 @@
+install_injection() {
+    [ -f /tmp/.injection_active ] && return 0
+    echo "INJECTION_MARKER_RAMble" > /tmp/injection_marker
+    LD_PRELOAD="$ASSETS_DIR/build/evil.so" /usr/bin/sleep 9999 &
+    echo $! > /tmp/sleep_infected.pid
+    sleep 1
+    tail -f /tmp/injection_marker >/dev/null 2>&1 &
+    echo $! > /tmp/injection_tail.pid
+    touch /tmp/.injection_active
+    echo "[+] Code injection (LD_PRELOAD) active"
+}
+clean_injection() {
+    [ -f /tmp/sleep_infected.pid ] && kill $(cat /tmp/sleep_infected.pid) 2>/dev/null
+    [ -f /tmp/injection_tail.pid ] && kill $(cat /tmp/injection_tail.pid) 2>/dev/null
+    rm -f /tmp/sleep_infected.pid /tmp/injection_tail.pid /tmp/injection_marker /tmp/.injection_active
+    echo "[+] Injection cleaned"
+}

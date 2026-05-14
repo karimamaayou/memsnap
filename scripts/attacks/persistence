@@ -1,0 +1,11 @@
+install_persistence() {
+    [ -f /tmp/.persistence_active ] && return 0
+    (crontab -l 2>/dev/null; echo "* * * * * echo persistent >> /tmp/persist.log") | crontab -
+    touch /tmp/.persistence_active
+    echo "[+] Cron persistence added"
+}
+clean_persistence() {
+    crontab -l 2>/dev/null | grep -v "echo persistent" | crontab -
+    rm -f /tmp/.persistence_active
+    echo "[+] Persistence cleaned"
+}

