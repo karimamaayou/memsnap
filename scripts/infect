@@ -47,22 +47,42 @@ done
 shift $((OPTIND-1))
 
 if $INSTALL_COMPLETION; then
-    cat > "$SCRIPT_DIR/memsnap-completion.bash" << 'EOF'
+    COMPLETION_FILE="/tmp/memsnap-completion.bash"
+    cat > "$COMPLETION_FILE" << 'EOF'
 #!/usr/bin/env bash
+# completion for memsnap infect
 _attack_list="rootkit injection backdoor reverse_shell ptrace_injection hollowing deleted_exe persistence cred_scrape cryptominer"
 _memsnap_infect_completion() {
-    local cur prev
-    _init_completion || return
+    local cur prev cmd
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    case "$prev" in
-        -A|-D|-r|-R) COMPREPLY=( $(compgen -W "$_attack_list" -- "$cur") ); return ;;
-        *) COMPREPLY=( $(compgen -W "-l -r -R -A -D -a -s -I" -- "$cur") ); return ;;
-    esac
+    cmd="${COMP_WORDS[0]}"
+
+    if [[ "$cmd" == "./memsnap" || "$cmd" == "memsnap" ]]; then
+        # first argument → suggest subcommands (at least "infect")
+        if [ $COMP_CWORD -eq 1 ]; then
+            COMPREPLY=( $(compgen -W "infect" -- "$cur") )
+            return
+        fi
+        # after "infect" → complete its options
+        if [ "${COMP_WORDS[1]}" = "infect" ]; then
+            case "$prev" in
+                -A|-D|-r|-R) COMPREPLY=( $(compgen -W "$_attack_list" -- "$cur") ); return ;;
+                *) COMPREPLY=( $(compgen -W "-l -r -R -A -D -a -s -I" -- "$cur") ); return ;;
+            esac
+        fi
+    elif [[ "$cmd" == "./scripts/infect" ]]; then
+        case "$prev" in
+            -A|-D|-r|-R) COMPREPLY=( $(compgen -W "$_attack_list" -- "$cur") ); return ;;
+            *) COMPREPLY=( $(compgen -W "-l -r -R -A -D -a -s -I" -- "$cur") ); return ;;
+        esac
+    fi
 }
-complete -F _memsnap_infect_completion ./scripts/infect
+complete -F _memsnap_infect_completion ./memsnap ./scripts/infect
 EOF
-    echo "[+] Completion script written to scripts/memsnap-completion.bash"
+    echo "[+] Completion script written to $COMPLETION_FILE"
+    echo "    Source it:  source $COMPLETION_FILE"
+    echo "    Add to bashrc:  echo 'source $COMPLETION_FILE' >> ~/.bashrc"
     exit 0
 fi
 
