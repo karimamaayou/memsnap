@@ -9,8 +9,11 @@ if [ $# -lt 1 ]; then
     echo ""
     echo "Available commands:"
     for script in "$SCRIPTS_DIR"/*; do
-        cmd=$(basename "$script")
-        echo "  $cmd"
+        if [ -f "$script" ]
+        then
+            cmd=$(basename "$script")
+            echo "  $cmd"
+        fi
     done
     exit 1
 fi
