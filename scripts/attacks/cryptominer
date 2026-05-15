@@ -1,12 +1,15 @@
+# Cryptominer simulation (CPU burn + fake sockets)
 install_cryptominer() {
-    [ -f /tmp/.cryptominer_active ] && return 0
-    "$ASSETS_DIR/build/miner_sim"
-    touch /tmp/.cryptominer_active
-    echo "[+] Cryptominer simulation deployed"
+    echo "[*] Starting cryptominer simulation..."
+    "$ASSETS_DIR/build/miner_sim" && set_flag "cryptominer"
 }
+
 clean_cryptominer() {
-    # The miner process cannot be reliably killed without modifying
-    # the C binary. Remove the flag only.
-    rm -f /tmp/.cryptominer_active
-    echo "[!] Cryptominer flag removed – miner may still be running"
+    echo "[*] Cleaning cryptominer..."
+    if [ -f /tmp/miner_sim.pid ]; then
+        kill $(cat /tmp/miner_sim.pid) 2>/dev/null || true
+        rm -f /tmp/miner_sim.pid
+    fi
+    pkill -f "miner_sim" 2>/dev/null || true
+    clear_flag "cryptominer"
 }

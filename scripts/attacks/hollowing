@@ -1,12 +1,13 @@
 install_hollowing() {
-    [ -f /tmp/.hollowing_active ] && return 0
-    "$ASSETS_DIR/build/process_hollow" /usr/bin/id
-    touch /tmp/.hollowing_active
-    echo "[+] Process hollowing deployed"
+    echo "[*] Starting process hollowing..."
+    "$ASSETS_DIR/build/process_hollow" /usr/bin/id && set_flag "hollowing"
 }
+
 clean_hollowing() {
-    # The hollowed process (shell) cannot be easily identified
-    # without modifying the C binary. Remove the flag only.
-    rm -f /tmp/.hollowing_active
-    echo "[!] Hollowing flag removed – child process may still be running"
+    echo "[*] Cleaning process hollowing..."
+    if [ -f /tmp/process_hollow.pid ]; then
+        kill $(cat /tmp/process_hollow.pid) 2>/dev/null || true
+        rm -f /tmp/process_hollow.pid
+    fi
+    clear_flag "hollowing"
 }

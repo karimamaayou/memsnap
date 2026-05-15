@@ -1,18 +1,23 @@
+# Ptrace-based injection into a sleep process
 install_ptrace_injection() {
-    [ -f /tmp/.ptrace_injection_active ] && return 0
-    /usr/bin/sleep 9999 &
-    local victim=$!
-    sleep 1
-    "$ASSETS_DIR/build/ptrace_inject" "$victim"
-    echo "$victim" > /tmp/ptrace_injection_victim.pid
-    touch /tmp/.ptrace_injection_active
-    echo "[+] Ptrace injection deployed (victim PID $victim)"
+    echo "[*] Starting ptrace injection..."
+    # Start target process
+    sleep 9999 &
+    SLEEP_PID=$!
+    echo $SLEEP_PID > /tmp/ptrace_target.pid
+    echo "[*] Target PID: $SLEEP_PID"
+    
+    # Wait a moment then inject
+    sleep 0.5
+    "$ASSETS_DIR/build/ptrace_inject" $SLEEP_PID && set_flag "ptrace_injection"
 }
+
 clean_ptrace_injection() {
-    if [ -f /tmp/ptrace_injection_victim.pid ]; then
-        kill $(cat /tmp/ptrace_injection_victim.pid) 2>/dev/null || true
-        rm -f /tmp/ptrace_injection_victim.pid
+    echo "[*] Cleaning ptrace injection..."
+    if [ -f /tmp/ptrace_target.pid ]; then
+        kill $(cat /tmp/ptrace_target.pid) 2>/dev/null || true
+        rm -f /tmp/ptrace_target.pid
     fi
-    rm -f /tmp/.ptrace_injection_active
-    echo "[+] Ptrace injection cleaned"
+    pkill -f "sleep 9999" 2>/dev/null || true
+    clear_flag "ptrace_injection"
 }

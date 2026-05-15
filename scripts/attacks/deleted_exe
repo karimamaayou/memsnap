@@ -1,20 +1,13 @@
+YELLOW='\033[0;33m'
+RESET='\033[0m'
+
 install_deleted_exe() {
-    [ -f /tmp/.deleted_exe_active ] && return 0
-    cp /usr/bin/id /tmp/deleted_exe_test
-    # The binary prints "[+] Child PID: <pid> still running" – we capture that pid
-    output=$("$ASSETS_DIR/build/deleted_exe" /tmp/deleted_exe_test 2>&1)
-    pid=$(echo "$output" | sed -n 's/.*Child PID: \([0-9]*\).*/\1/p')
-    if [ -n "$pid" ]; then
-        echo "$pid" > /tmp/deleted_exe_child.pid
-    fi
-    touch /tmp/.deleted_exe_active
-    echo "[+] Deleted executable attack deployed"
+    echo -e "${YELLOW}WARNING: deleted_exe is currently broken (hangs the installer) and will be removed in a future release. Skipping.${RESET}" >&2
+    return 0
 }
+
 clean_deleted_exe() {
-    if [ -f /tmp/deleted_exe_child.pid ]; then
-        kill $(cat /tmp/deleted_exe_child.pid) 2>/dev/null || true
-        rm -f /tmp/deleted_exe_child.pid
-    fi
-    rm -f /tmp/.deleted_exe_active /tmp/deleted_exe_test
-    echo "[+] Deleted exe cleaned"
+    echo -e "${YELLOW}WARNING: deleted_exe cleanup may not be fully effective.${RESET}" >&2
+    rm -f /tmp/.deleted_exe_active /tmp/to_delete
+    return 0
 }

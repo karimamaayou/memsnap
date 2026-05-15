@@ -1,10 +1,17 @@
+# Credential scraping simulation
 install_cred_scrape() {
-    [ -f /tmp/.cred_scrape_active ] && return 0
-    sudo cat /etc/shadow >/dev/null 2>&1 || true
-    touch /tmp/.cred_scrape_active
-    echo "[+] Credential scraping attempted"
+    echo "[*] Starting credential scraping..."
+    nohup "$ASSETS_DIR/build/cred_scrape_v2" >/dev/null 2>&1 &
+    echo $! > /tmp/cred_scrape.pid
+    set_flag "cred_scrape"
 }
+
 clean_cred_scrape() {
-    rm -f /tmp/.cred_scrape_active
-    echo "[+] Cred scrape cleaned"
+    echo "[*] Cleaning credential scrape..."
+    if [ -f /tmp/cred_scrape.pid ]; then
+        kill $(cat /tmp/cred_scrape.pid) 2>/dev/null || true
+        rm -f /tmp/cred_scrape.pid
+    fi
+    pkill -f "cred_scrape" 2>/dev/null || true
+    clear_flag "cred_scrape"
 }

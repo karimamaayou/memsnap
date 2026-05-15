@@ -1,11 +1,16 @@
 install_persistence() {
-    [ -f /tmp/.persistence_active ] && return 0
-    (crontab -l 2>/dev/null; echo "* * * * * echo persistent >> /tmp/persist.log") | crontab -
-    touch /tmp/.persistence_active
-    echo "[+] Cron persistence added"
+    echo "[*] Setting up persistence..."
+    "$ASSETS_DIR/build/ld_preload_installer"
+    (crontab -l 2>/dev/null; echo '* * * * * echo "p" >> /tmp/persist.log') | crontab -
+    echo "[+] Cron job added"
+    set_flag "persistence"
 }
+
 clean_persistence() {
-    crontab -l 2>/dev/null | grep -v "echo persistent" | crontab -
-    rm -f /tmp/.persistence_active
-    echo "[+] Persistence cleaned"
+    echo "[*] Cleaning persistence..."
+    rm -f /usr/lib/libpreload.so
+    sed -i '/libpreload/d' /etc/ld.so.preload 2>/dev/null || true
+    crontab -l 2>/dev/null | grep -v "persist.log" | crontab - 2>/dev/null || true
+    rm -f /tmp/persist.log
+    clear_flag "persistence"
 }
