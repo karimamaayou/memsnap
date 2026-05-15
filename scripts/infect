@@ -10,8 +10,8 @@ INSTALL_COMPLETION=false
 ACTION=""
 CAPTURE=false
 OUTPUT_DIR="."
+QUEUE_OP=false
 
-# FIX: persist queue across invocations
 QUEUE_FILE="${XDG_RUNTIME_DIR:-/tmp}/.memsnap_queue"
 SELECTED=()
 [ -f "$QUEUE_FILE" ] && mapfile -t SELECTED < "$QUEUE_FILE"
@@ -19,13 +19,14 @@ SELECTED=()
 usage() {
     echo "Usage: $0 [options]"
     echo "  -I          Install bash completion"
-    echo "  -A <attack> Add attack to queue (repeatable)"
+    echo "  -A <attack> Add attack to queue (repeatable; deduped)"
     echo "  -D <attack> Remove attack from queue"
+    echo "  -C          Clear the entire queue"
     echo "  -l          List attacks in queue"
     echo "  -r          Run queued attacks (install)"
-    echo "  -R          Reverse queued attacks (clean)"
+    echo "  -R [none]   Reverse queued attacks; cleans ALL if queue is empty"
     echo "  -s          Show active attacks"
-    echo "  -a <dir>    Capture memory after -r/-R (dir required)"
+    echo "  -a <dir>    Capture memory (standalone or after -r/-R)"
     exit 1
 }
 
@@ -38,27 +39,49 @@ _clear_queue() {
     rm -f "$QUEUE_FILE"
 }
 
-while getopts "IA:D:lrRa:s" opt; do
+while getopts "IA:D:ClrRa:s" opt; do
     case $opt in
         I) INSTALL_COMPLETION=true ;;
-        A) SELECTED+=("$OPTARG")
-           _save_queue
-           ;;
-        D)
-            new=()
+
+        A)
+            already=false
+            for a in "${SELECTED[@]}"; do
+                [ "$a" = "$OPTARG" ] && already=true && break
+            done
+            if $already; then
+                echo "[!] '$OPTARG' already in queue" >&2
+            else
+                SELECTED+=("$OPTARG")
+                _save_queue
+            fi
+            QUEUE_OP=true
+            ;;
+
+        D)  new=()
             for a in "${SELECTED[@]}"; do
                 [ "$a" != "$OPTARG" ] && new+=("$a")
             done
             SELECTED=("${new[@]}")
             _save_queue
+            QUEUE_OP=true
             ;;
+
+        C)
+            _clear_queue
+            echo "[+] Queue cleared."
+            exit 0
+            ;;
+
         l) echo "${SELECTED[*]:-none}"; exit 0 ;;
         r) ACTION="install" ;;
         R) ACTION="clean" ;;
-        a) CAPTURE=true
-           OUTPUT_DIR="$OPTARG"
-           ;;
+
+        a)  CAPTURE=true
+            OUTPUT_DIR="$OPTARG"
+            ;;
+
         s) ACTION="status" ;;
+
         *) usage ;;
     esac
 done
@@ -83,13 +106,13 @@ _memsnap_infect_completion() {
         if [ "${COMP_WORDS[1]}" = "infect" ]; then
             case "$prev" in
                 -A|-D) COMPREPLY=( $(compgen -W "$_attack_list" -- "$cur") ); return ;;
-                *) COMPREPLY=( $(compgen -W "-l -r -R -A -D -a -s -I" -- "$cur") ); return ;;
+                *) COMPREPLY=( $(compgen -W "-l -r -R -A -D -C -a -s -I" -- "$cur") ); return ;;
             esac
         fi
     elif [[ "$cmd" == "./scripts/infect" ]]; then
         case "$prev" in
             -A|-D) COMPREPLY=( $(compgen -W "$_attack_list" -- "$cur") ); return ;;
-            *) COMPREPLY=( $(compgen -W "-l -r -R -A -D -a -s -I" -- "$cur") ); return ;;
+            *) COMPREPLY=( $(compgen -W "-l -r -R -A -D -C -a -s -I" -- "$cur") ); return ;;
         esac
     fi
 }
@@ -111,24 +134,35 @@ if [ "$ACTION" = "status" ]; then
     exit 0
 fi
 
-[ -z "$ACTION" ] && usage
-[ ${#SELECTED[@]} -eq 0 ] && { echo "[!] No attacks selected. Use -A." >&2; exit 1; }
+if [ -z "$ACTION" ]; then
+    $CAPTURE && { : ; } || { $QUEUE_OP && exit 0 || usage; }
+fi
 
-for attack in "${SELECTED[@]}"; do
-    script="$ATTACKS_DIR/$attack"
-    [ -x "$script" ] || { echo "[!] Unknown attack: $attack" >&2; exit 1; }
-    source "$script"
-    if [ "$ACTION" = "install" ]; then
-        install_$attack
-    else
-        clean_$attack
+if [ -n "$ACTION" ]; then
+
+    if [ "$ACTION" = "clean" ] && [ ${#SELECTED[@]} -eq 0 ]; then
+        echo "[*] Queue empty – loading all known attacks for cleanup."
+        for script in "$ATTACKS_DIR"/*; do
+            [ -x "$script" ] && SELECTED+=("$(basename "$script")")
+        done
     fi
-done
 
-echo "[+] $ACTION complete."
+    [ ${#SELECTED[@]} -eq 0 ] && { echo "[!] No attacks selected. Use -A." >&2; exit 1; }
 
-# FIX: clear queue after running so it doesn't re-run stale attacks
-_clear_queue
+    for attack in "${SELECTED[@]}"; do
+        script="$ATTACKS_DIR/$attack"
+        [ -x "$script" ] || { echo "[!] Unknown attack: $attack" >&2; exit 1; }
+        source "$script"
+        if [ "$ACTION" = "install" ]; then
+            install_$attack
+        else
+            clean_$attack
+        fi
+    done
+
+    echo "[+] $ACTION complete."
+    _clear_queue
+fi
 
 if $CAPTURE; then
     AVML_DIR="$HOME/.local/bin"
@@ -146,7 +180,6 @@ if $CAPTURE; then
     done
     [ ${#comps[@]} -eq 0 ] && comps=("clean")
 
-    # FIX: save/restore IFS so mutation doesn't leak
     old_IFS="$IFS"
     IFS=_
     filename="memdump_${ts}_${comps[*]}.raw"
